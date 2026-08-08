@@ -1,0 +1,28 @@
+# --- Personal / runtime config (NEVER published) ---------------------------
+# Per-install runtime config; defaults ship as default_config.yaml.
+config.json
+config.json.before-*.bak
+
+# Runtime benchmark/execution record (machine state).
+execute_record.json
+
+# --- Local pre-edit backups -------------------------------------------------
+*.bak
+*.before-*.bak
+
+# --- Runtime toggle / disabled-flag state -----------------------------------
+.toggle-*
+.disabled
+
+# --- Python caches ----------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- OS clutter -------------------------------------------------------------
+.DS_Store
+Thumbs.db

@@ -1,0 +1,10 @@
+# Default configuration for the Caveman plugin.
+#
+# All keys are optional. Anything you don't set falls back to the defaults below.
+# The plugin reads this via helpers.plugins.get_plugin_config("caveman").
+
+enabled: false         # master switch. Turn ON to inject the caveman style.
+level: full            # one of: lite | full | ultra | wenyan-lite | wenyan-full | wenyan-ultra
+auto_clarity: true     # when true, the model is told to drop caveman style on
+                       # security warnings, destructive ops, and ambiguous multi-step
+                       # sequences (recommended; matches upstream behaviour).

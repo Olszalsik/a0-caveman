@@ -1,0 +1,16 @@
+name: caveman
+title: Caveman (token-compressed replies)
+description: >
+ Cuts 65% of output tokens (measured) by speaking like a caveman while
+ keeping full technical accuracy. Supports 6 intensity levels:
+ lite, full, ultra, wenyan-lite, wenyan-full, wenyan-ultra.
+
+ Derived from Julius Brussee's caveman plugin
+ (https://github.com/juliusbrussee/caveman), adapted to Agent Zero
+ conventions. MIT licensed.
+version: 0.4.0
+settings_sections:
+ - developer
+per_project_config: false
+per_agent_config: false
+always_enabled: false
