@@ -1,0 +1,35 @@
+# Plugin Hub submission manifest (agent0ai/a0-plugins).
+#
+# This file is NOT read by the agent-zero runtime (the runtime reads
+# plugin.yaml). It is the index entry for the community Plugin Hub. To
+# publish, copy this file (and thumbnail.png) to:
+#   plugins/caveman/
+# in a fork of https://github.com/agent0ai/a0-plugins, then open a PR.
+# A square source thumbnail exists at webui/thumbnail.png (256x256, 4.1KB) --
+# copy it into the folder as thumbnail.png.
+#
+# Pre-req: the GitHub repo below MUST be public (the Hub fetches the
+# README from raw.githubusercontent.com and the installer clones a
+# public git URL). Made public as part of the 2026-09-01 submission.
+#
+# CI rules (see skills/a0-contribute-plugin/SKILL.md):
+#   - title max 50 chars, description max 500 chars, tags max 5
+#   - folder name ^[a-z0-9_]+$ (no leading _) -> caveman
+#   - remote plugin.yaml `name` must equal this folder name (it does:
+#     `name: caveman`)
+#   - github URL must be unique in the index and point to an existing
+#     public repo (verified FREE against generated-index 2026-09-01)
+#   - remote repo root must contain LICENSE (it does: MIT, retains
+#     upstream Julius Brussee copyright)
+
+title: Caveman (token-compressed replies)
+description: >-
+  Cuts output tokens by roughly 65% while keeping full technical accuracy by
+  having the agent answer in compressed caveman-speak, across six intensity
+  levels including Classical Chinese modes. Toggleable per chat from the
+  WebUI, with live response validation and cumulative token-savings stats.
+github: https://github.com/Olszalsik/a0-caveman
+tags:
+  - prompting
+  - llm
+  - tools
