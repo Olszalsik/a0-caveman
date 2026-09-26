@@ -1,58 +1,33 @@
 """
 Caveman plugin - system prompt injection.
 
-Appends the caveman style prompt (base + per-chat intensity + optional
-auto-clarity fragment) to the agent's system prompt on every turn, but
-ONLY when the plugin is enabled for the current chat.
-
-Per-chat state is read from usr.plugins.caveman.helpers.state, which is
-populated by the /caveman <level> slash command (see
-monologue_start/_30_caveman_command.py).
-
-Global config (helpers.plugins.get_plugin_config) provides:
- - enabled: default bool (per-chat override takes precedence)
- - level: default intensity (per-chat override takes precedence)
- - auto_clarity: bool, controls whether auto-clarity rules are appended
-
 Extension point: system_prompt
+
+Appends the base style, the active level's ruleset block, and (when enabled) the
+auto-clarity rules to the agent's system prompt.
+
+Enabled and level are resolved through `caveman_state.resolve(chat_id, config)`,
+the same call every other extension uses, so the prompt injector, the slash
+command handler, the observer, the validator and the API cannot disagree about
+what a chat is doing.
+
+The prompt text itself is assembled by `helpers/prompts.py`, which the
+benchmark harness also calls. Keeping the assembly in one place is what stops
+the benchmark from measuring something other than what is sent.
 """
 
-import os
-from typing import Any
+from typing import Any, Optional
 
 from helpers.extension import Extension
-from helpers import plugins as plugins_helper
 
+from usr.plugins.caveman.helpers import plugins_config as plugin_cfg
+from usr.plugins.caveman.helpers import prompts as caveman_prompts
 from usr.plugins.caveman.helpers import state as caveman_state
 
 
 PLUGIN_NAME = "caveman"
 
-PROMPTS_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "prompts",
-)
-
-
-def _read_fragment(filename: str) -> str:
-    path = os.path.join(PROMPTS_DIR, filename)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read().rstrip()
-    except FileNotFoundError:
-        return ""
-    except Exception:
-        return ""
-
-
-def _get_config() -> dict:
-    try:
-        cfg = plugins_helper.get_plugin_config(PLUGIN_NAME) or {}
-    except Exception:
-        cfg = {}
-    if not isinstance(cfg, dict):
-        cfg = {}
-    return cfg
+MARKER = caveman_prompts.MARKER
 
 
 def _chat_id_from(agent) -> str:
@@ -61,13 +36,13 @@ def _chat_id_from(agent) -> str:
     ctx = getattr(agent, "context", None)
     if ctx is None:
         return ""
-    return str(getattr(ctx, "id", "") or getattr(ctx, "chat_id", "") or "")
+    return str(getattr(ctx, "id", "") or "")
 
 
 class CavemanStyle(Extension):
     async def execute(
         self,
-        system_prompt: list = None,
+        system_prompt: Optional[list] = None,
         loop_data: Any = None,
         **kwargs: Any,
     ):
@@ -76,34 +51,34 @@ class CavemanStyle(Extension):
         if system_prompt is None:
             system_prompt = []
 
-        cfg = _get_config()
-        default_enabled = bool(cfg.get("enabled", False))
-        default_level = cfg.get("level", "full")
-
-        chat_id = _chat_id_from(self.agent)
-        enabled = caveman_state.is_enabled(chat_id, default_enabled)
-        if not enabled:
+        config = plugin_cfg.get_config()
+        resolved = caveman_state.resolve(_chat_id_from(self.agent), config)
+        if not resolved["enabled"]:
             return
 
-        level = caveman_state.get_level(chat_id, default_level)
-        if level not in caveman_state.VALID_LEVELS:
-            level = "full"
-
-        base = _read_fragment("caveman.system.style.md")
-        intensity = _read_fragment(f"caveman.intensity.{level}.md")
-        clarity = ""
-        if cfg.get("auto_clarity", True):
-            clarity = _read_fragment("caveman.auto_clarity.md")
-
-        block_parts = [p for p in (base, intensity, clarity) if p]
-        if not block_parts:
+        block = caveman_prompts.build_system_prompt(
+            resolved["level"],
+            auto_clarity=plugin_cfg.get_bool("auto_clarity"),
+        )
+        if not block:
             return
 
-        footer = f"\n\n<active_level>{level}</active_level>"
-        block = "\n\n".join(block_parts) + footer
-
-        marker = '<style name="caveman"'
-        if any(marker in (s or "") for s in system_prompt):
+        # `get_system_prompt` builds a fresh list on every call, so this cannot
+        # currently fire. Kept as a guard: it costs one pass over a short list
+        # and turns a duplicated block into a visible warning rather than
+        # silently doubling the prompt.
+        if any(MARKER in (section or "") for section in system_prompt):
+            try:
+                self.agent.context.log.log(
+                    type="warning",
+                    content=(
+                        f"{self.agent.agent_name}: caveman style block already "
+                        f"present in the system prompt; not appending a second "
+                        f"copy"
+                    ),
+                )
+            except Exception:
+                pass
             return
 
         system_prompt.append(block)

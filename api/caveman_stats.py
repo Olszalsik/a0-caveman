@@ -1,76 +1,107 @@
 """
-Caveman plugin - live token-savings stats API.
+Caveman plugin - token/length observation API.
 
 Route: POST /api/plugins/caveman/caveman_stats
 
-Returns per-chat and lifetime stats: turns, chars, est_tokens_saved, last_level.
+Returns raw observed quantities only: how many assistant turns were produced
+and how many characters the user actually saw, broken down by level.
 
-Request body:
- { "action": "get" | "list" | "reset", "chat_id": "<id>" }
+  {"action": "get",     "chat_id": "<id>"}
+  {"action": "list"}
+  {"action": "summary"}
+  {"action": "reset",   "chat_id": "<id>"}
+  {"action": "history", "chat_id": "<id>"}   -> mode transitions, oldest first
 
-Response:
- { "ok": true, "chat_id": "...", "turns": N, "chars": N, "est_tokens_saved": N, "last_level": "full" }
- { "ok": true, "action": "list", "chats": { ... } }
- { "ok": true, "action": "reset", "chat_id": "..." }
+There is deliberately no "estimated tokens saved" field. A saving cannot be
+derived from a single observed length: it needs a measured control arm. The
+previous revision multiplied the observed length by a hardcoded per-level
+ratio and reported the product as "tokens saved"; upstream retracted exactly
+that number (`docs/HONEST-NUMBERS.md`: "Output reduction ... Not published").
+`benchmarks/run.py` now runs a real A/B instead.
+
+`history` is what makes the observations attributable: it lists the level that
+was actually active at each transition, so output can be attributed to the mode
+in force when it was generated rather than to whatever the mode is at read
+time. Only real transitions are logged.
+
+All file access goes through `helpers.state`, which holds the single module
+lock. This handler previously carried its own `_LOCK` and its own copy of the
+read-modify-write path, so a concurrent monologue_end and reset could lose
+each other's writes.
 """
 
-import json
-import os
-import threading
+from helpers.api import ApiHandler  # type: ignore
 
-from helpers.api import ApiHandler
+from usr.plugins.caveman.helpers import state as caveman_state
 
 
 PLUGIN_NAME = "caveman"
-_LOCK = threading.Lock()
 
 
-def _stats_path() -> str:
-    workdir = os.environ.get("AGENT_WORKDIR") or os.environ.get("A0_WORKDIR")
-    if not workdir:
-        workdir = os.path.join(os.path.expanduser("~"), ".cache", "agent0", "caveman")
-    return os.path.join(workdir, ".caveman", "stats.json")
-
-
-def _read() -> dict:
-    p = _stats_path()
-    if not os.path.isfile(p):
-        return {}
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f) or {}
-    except Exception:
-        return {}
-
-
-def _write(data: dict) -> None:
-    p = _stats_path()
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, sort_keys=True)
-        os.replace(tmp, p)
-    except OSError:
-        pass
+def _payload(input_data) -> dict:
+    return input_data if isinstance(input_data, dict) else {}
 
 
 class CavemanStats(ApiHandler):
     async def process(self, input_data, request):
-        action = (input_data or {}).get("action", "get")
-        chat_id = (input_data or {}).get("chat_id") or ""
-        with _LOCK:
-            data = _read()
+        data = _payload(input_data)
+        action = data.get("action") or "get"
+        chat_id = str(data.get("chat_id") or "")
+
         if action == "list":
-            return {"ok": True, "action": "list", "chats": data, "stats_path": _stats_path()}
+            return {
+                "ok": True,
+                "action": "list",
+                "chats": caveman_state.all_stats(),
+                "stats_path": caveman_state.stats_path(),
+            }
+
+        if action == "summary":
+            return {
+                "ok": True,
+                "action": "summary",
+                "summary": caveman_state.summary(),
+            }
+
+        if action == "history":
+            if not chat_id:
+                return {
+                    "ok": False,
+                    "action": action,
+                    "error": "chat_id is required for this action",
+                }
+            return {
+                "ok": True,
+                "action": "history",
+                "chat_id": chat_id,
+                "transitions": caveman_state.mode_history(chat_id),
+                "mode_log_path": caveman_state.mode_log_path(),
+            }
+
         if not chat_id:
-            return {"ok": False, "error": "chat_id is required for this action"}
+            return {
+                "ok": False,
+                "action": action,
+                "error": "chat_id is required for this action",
+            }
+
         if action == "get":
-            entry = data.get(chat_id) or {}
-            return {"ok": True, "action": "get", "chat_id": chat_id, **entry}
+            return {
+                "ok": True,
+                "action": "get",
+                "chat_id": chat_id,
+                **caveman_state.get_stats(chat_id),
+            }
+
         if action == "reset":
-            with _LOCK:
-                data.pop(chat_id, None)
-                _write(data)
-            return {"ok": True, "action": "reset", "chat_id": chat_id}
-        return {"ok": False, "error": f"unknown action: {action!r}"}
+            return {
+                "ok": caveman_state.reset_stats(chat_id),
+                "action": "reset",
+                "chat_id": chat_id,
+            }
+
+        return {
+            "ok": False,
+            "action": action,
+            "error": f"unknown action: {action!r}",
+        }

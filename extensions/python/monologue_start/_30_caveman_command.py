@@ -1,20 +1,31 @@
 """
 Caveman plugin - slash command detection.
 
-At the start of each agent turn, inspects the most recent user message
-for caveman slash commands / natural phrases and updates the per-chat
-level state.
-
-Recognised patterns (case-insensitive):
- /caveman [lite|full|ultra|wenyan-lite|wenyan-full|wenyan-ultra]
- /caveman off
- /caveman on
- talk like caveman
- use caveman
- caveman on
- normal mode | stop caveman | caveman off | caveman disabled
-
 Extension point: monologue_start
+
+At the start of each agent turn, reads the user message for caveman commands
+and updates the per-chat level state.
+
+Recognised (case-insensitive):
+  /caveman [lite|full|ultra|wenyan-lite|wenyan-full|wenyan-ultra]
+  /caveman off | stop | disable | disabled
+  /caveman on | enable | enabled
+  /caveman
+  talk like caveman | use caveman | caveman on
+  normal mode | stop caveman | caveman off | disable caveman
+
+The user message is read through `history.Message.output_text()`, which is the
+framework's own accessor for the recursive `MessageContent` union. An earlier
+revision probed `loop_data.last_user_message` / `.last_message` / `.messages`
+and gated every branch on `isinstance(obj, str)`. None of those attributes
+exist on `LoopData`, and `loop_data.user_message` is a `history.Message`, not
+a `str`, so the probe always returned "" and every command below was
+unreachable.
+
+The user message is deliberately left untouched. Replacing it would corrupt
+state that other extensions read for the same turn (memory and skill recall
+both read `loop_data.user_message`), and the injected style prompt already
+forbids the model from announcing the mode.
 """
 
 import re
@@ -27,13 +38,33 @@ from usr.plugins.caveman.helpers import state as caveman_state
 
 PLUGIN_NAME = "caveman"
 
+_LEVELS = "|".join(re.escape(level) for level in caveman_state.VALID_LEVELS)
+_OFF_WORDS = "off|stop|disable|disabled"
+_ON_WORDS = "on|enable|enabled"
+
 COMMAND_PATTERNS = [
-    (re.compile(r"^\s*/caveman\s+(lite|full|ultra|wenyan-lite|wenyan-full|wenyan-ultra)\b", re.IGNORECASE), "set_level"),
-    (re.compile(r"^\s*/caveman\s+(off|disable|disabled|stop)\b", re.IGNORECASE), "off"),
-    (re.compile(r"^\s*/caveman\s+(on|enable|enabled)\b", re.IGNORECASE), "on"),
+    (
+        re.compile(rf"^\s*/caveman\s+({_LEVELS})\b", re.IGNORECASE),
+        "set_level",
+    ),
+    (re.compile(rf"^\s*/caveman\s+({_OFF_WORDS})\b", re.IGNORECASE), "off"),
+    (re.compile(rf"^\s*/caveman\s+({_ON_WORDS})\b", re.IGNORECASE), "on"),
     (re.compile(r"^\s*/caveman\s*$", re.IGNORECASE), "on_default"),
-    (re.compile(r"^\s*(talk\s+like\s+caveman|use\s+caveman|caveman\s+on)\b[.!?]*\s*$", re.IGNORECASE), "on_default"),
-    (re.compile(r"^\s*(normal\s+mode|stop\s+caveman|caveman\s+off|caveman\s+disabled|disable\s+caveman)\b[.!?]*\s*$", re.IGNORECASE), "off"),
+    (
+        re.compile(
+            r"^\s*(talk\s+like\s+caveman|use\s+caveman|caveman\s+on)\b[.!?]*\s*$",
+            re.IGNORECASE,
+        ),
+        "on_default",
+    ),
+    (
+        re.compile(
+            r"^\s*(normal\s+mode|stop\s+caveman|caveman\s+off|"
+            r"caveman\s+disabled|disable\s+caveman)\b[.!?]*\s*$",
+            re.IGNORECASE,
+        ),
+        "off",
+    ),
 ]
 
 
@@ -41,21 +72,12 @@ def _classify(text: str) -> Optional[tuple]:
     if not text:
         return None
     for pat, action in COMMAND_PATTERNS:
-        m = pat.match(text)
-        if m:
+        match = pat.match(text)
+        if match:
             if action == "set_level":
-                return (action, m.group(1).lower())
+                return (action, match.group(1).lower())
             return (action, None)
     return None
-
-
-def _strip_command(text: str) -> str:
-    out = text
-    for pat, _ in COMMAND_PATTERNS:
-        out = pat.sub("", out).strip()
-    out = re.sub(r"\s+", " ", out).strip()
-    out = re.sub(r"^[\s,.;:!?\-]+", "", out).strip()
-    return out
 
 
 def _chat_id_from(agent) -> str:
@@ -64,29 +86,31 @@ def _chat_id_from(agent) -> str:
     ctx = getattr(agent, "context", None)
     if ctx is None:
         return ""
-    return str(getattr(ctx, "id", "") or getattr(ctx, "chat_id", "") or "")
+    return str(getattr(ctx, "id", "") or "")
 
 
 def _get_latest_user_text(loop_data: Any) -> str:
+    """Extract the user-visible text of the current turn's user message."""
     if loop_data is None:
         return ""
-    for attr_chain in (
-        ("last_user_message",),
-        ("user_message",),
-        ("last_message",),
-        ("messages", -1),
-    ):
-        obj = loop_data
-        try:
-            for a in attr_chain:
-                if isinstance(a, int):
-                    obj = obj[a]
-                else:
-                    obj = getattr(obj, a)
-            if isinstance(obj, str) and obj.strip():
-                return obj
-        except Exception:
-            pass
+
+    message = getattr(loop_data, "user_message", None)
+    if message is not None:
+        # Canonical accessor; unwraps the recursive MessageContent union.
+        for attr in ("output_text",):
+            getter = getattr(message, attr, None)
+            if callable(getter):
+                try:
+                    text = getter()
+                except Exception:
+                    text = None
+                if isinstance(text, str) and text.strip():
+                    return text
+        # Fallback for a bare string content or a stub message object.
+        content = getattr(message, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content
+
     return ""
 
 
@@ -113,18 +137,21 @@ class CavemanCommand(Extension):
             return
 
         if action == "set_level":
-            caveman_state.set_level(chat_id, value)
-            caveman_state.set_enabled(chat_id, True)
+            # One atomic write: set the level and turn the mode on together, so
+            # no reader can observe a half-applied command.
+            ok = caveman_state.set_state(chat_id, level=value, enabled=True)
         elif action == "off":
-            caveman_state.set_enabled(chat_id, False)
-        elif action == "on":
-            caveman_state.set_enabled(chat_id, True)
-        elif action == "on_default":
-            caveman_state.set_enabled(chat_id, True)
+            ok = caveman_state.set_state(chat_id, enabled=False)
+        elif action in ("on", "on_default"):
+            ok = caveman_state.set_state(chat_id, enabled=True)
+        else:
+            return
 
-        residual = _strip_command(text)
-        if not residual and hasattr(loop_data, "last_user_message"):
-            try:
-                setattr(loop_data, "last_user_message", "[caveman command processed]")
-            except Exception:
-                pass
+        if not ok:
+            self.agent.context.log.log(
+                type="warning",
+                content=(
+                    f"{self.agent.agent_name}: caveman command failed to persist "
+                    f"(action={action!r}, value={value!r})"
+                ),
+            )

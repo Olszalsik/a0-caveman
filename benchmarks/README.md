@@ -1,58 +1,109 @@
 # Caveman benchmarks (Agent Zero port)
 
-Reproducible token-savings measurements for the caveman plugin running on
-Agent Zero v2.2.
+Reproducible measurement of what the caveman style prompt actually does, run
+against a real model.
 
 ## Quick start
 
 ```bash
-# Dry run (no LLM call, estimates from prompt length only):
-python /a0/usr/plugins/caveman/benchmarks/run.py --dry-run
+# Check fixtures and prompt fragments. No model call, no invented numbers.
+python benchmarks/run.py --validate
 
-# Real run with a specific model:
-python /a0/usr/plugins/caveman/benchmarks/run.py --model gpt-4o-mini --output out.json
-
-# One prompt only:
-python /a0/usr/plugins/caveman/benchmarks/run.py --prompt 3 --model gpt-4o-mini
+python benchmarks/run.py --list
+python benchmarks/run.py --model gpt-4o-mini --output results.json
+python benchmarks/run.py --model gpt-4o-mini --levels full,ultra --repeats 3
 ```
+
+There is no `--dry-run` output number. The previous harness had one that fed
+the prompt text back in as a synthetic "response" and then reported a
+reduction algebraically equal to a hardcoded constant, so `--level full`
+printed 65% forever whether or not a model was ever called.
+
+## What was wrong with the previous harness
+
+- It never used the plugin's prompts. It sent a bare user message with no
+  system prompt at all, so it was not measuring caveman.
+- It had no control arm. There was nothing to compare the treatment against.
+- `avg_reduction_pct = 100 * total_saved / total_est_tokens`, where
+  `est_saved = est_tokens * REDUCTION_FRACTION[level]` and
+  `est_tokens = chars // 4`. That expression simplifies to
+  `REDUCTION_FRACTION[level] * 100` for any input, so the reported figure was
+  the constant it started from.
+- The `REDUCTION_FRACTION` table was upstream's original 65% headline, which
+  upstream has since retracted (`docs/HONEST-NUMBERS.md`: output reduction
+  "Not published"; "earlier stats releases applied a fixed 65% output ratio
+  without a committed reviewed result").
 
 ## Method
 
-- 10 fixed prompts ported from the upstream caveman benchmark suite
-  (`prompts.json`). Categories: debugging, bugfix, setup, explanation,
-  refactor, architecture, code-review, devops, implementation.
-- For each prompt, we run the prompt through the configured litellm model
-  with caveman level applied (the level is passed via the plugin config).
-- We measure `chars_out` per response, estimate tokens as `chars / 4`
-  (matches upstream's order of magnitude; not exact Claude-API telemetry).
-- Reduction fractions per level (calibrated to upstream's published numbers):
+**Arms.** For every prompt, the same model is called once per arm:
 
-| Level | Reduction |
+| Arm | System prompt |
 |---|---|
-| lite | 30% |
-| full | 65% |
-| ultra | 80% |
-| wenyan-lite | 55% |
-| wenyan-full | 70% |
-| wenyan-ultra | 80% |
+| `__baseline__` | none |
+| `__terse__` | `Answer concisely.` |
+| `<level>` | the plugin's real fragments for that level |
 
-## Honest numbers
+The level arms are built by `build_system_prompt()`, which reads the same
+files the `system_prompt` extension injects at runtime. A missing fragment
+fails the run rather than silently measuring nothing.
 
-The numbers are ESTIMATES, not exact Claude-API usage. They are useful for
-relative comparison (which level saves more) and for tracking the plugin's
-overall behavior over time, not for billing reconciliation. See the
-upstream [HONEST-NUMBERS.md](https://github.com/juliusbrussee/caveman/blob/main/docs/HONEST-NUMBERS.md)
-for the full caveat.
+**The terse control is the comparison that matters.** Measuring against a
+verbose baseline conflates the style prompt with the fact that the user asked
+for brevity. Upstream `evals/measure.py` reports savings *on top of the terse
+arm* for this reason, and so does this harness. A level that merely matches
+`Answer concisely.` has not justified its input-token cost.
+
+**Counting.** `tiktoken` `o200k_base` when installed, otherwise a character
+estimate that weights CJK at roughly one token per character (a flat `chars/4`
+badly undercounts the three `wenyan-*` arms). The report prints which basis
+was used.
+
+**Statistics.** Median, mean, min, max and stdev per level, so a number can be
+seen to be solid or noisy. Single runs have stdev 0 by construction; use
+`--repeats` for a real spread.
+
+**Input cost.** The style prompt is re-sent on every turn, so the harness also
+counts its tokens and reports a break-even: how many output tokens per turn
+must be saved to offset the input the prompt adds. On the current prompt
+fragments that is roughly 750-850 input tokens per turn (measured on the shipped text, 713 for wenyan-ultra through 821 for ultra). On terse Q&A that is a
+real cost, and it is the number that decides whether a level is worth
+enabling for a given workload.
+
+## What a result does and does not establish
+
+Per upstream `docs/technical/accounting-and-evidence.md`, every number here
+carries a basis:
+
+- token counts: `measured` (tiktoken) or `inferred` (char estimate)
+- savings: `benchmark_counterfactual`
+
+It establishes output length under one model on one prompt set. It does
+**not** establish semantic or technical equivalence, input-token cost under
+real cache behaviour, latency, or billing. One fixture result supports only
+that fixture and method; an average reduction does not prove equal task
+quality.
+
+Quote a result only alongside the raw file it came from:
+
+```bash
+python benchmarks/run.py --model gpt-4o-mini --repeats 3 --output results.json
+```
+
+`results.json` records the fixture version, model, temperature, tokenizer
+basis, platform, and every raw output per arm, so the printed table can be
+recomputed rather than trusted.
 
 ## Files
 
-- `run.py` - harness, async litellm calls, JSON output
-- `prompts.json` - the 10 benchmark prompts
+- `run.py` - harness
+- `prompts.json` - 10 prompts, categories: debugging, bugfix, setup,
+  explanation, refactor, architecture, code-review, devops, implementation
 - `README.md` - this file
 
-## Reproducing upstream numbers
+## Upstream
 
-The upstream caveman repo has a different evaluation harness (`evals/`).
-The port here uses the same prompt set but a simpler measurement method
-(chars/4 estimate instead of real Claude API usage). The relative ordering
-of levels should match; the absolute percentages may differ by 5-15%.
+Ported from [juliusbrussee/caveman](https://github.com/juliusbrussee/caveman)
+(MIT). Upstream's own harness lives in `evals/` and `benchmarks/`; read
+`docs/HONEST-NUMBERS.md` there before quoting any percentage, including one
+produced here.

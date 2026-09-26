@@ -32,8 +32,8 @@ Loadable via `skills_tool: load`:
 |-------|---------|-----------|
 | **caveman-commit** | `/caveman-commit` | Terse commit messages. Conventional Commits. <=50 char subject. |
 | **caveman-review** | `/caveman-review` | One-line PR comments: `L42: bug: user null. Add guard.` |
-| **caveman-compress** | `/caveman-compress <file>` | Compress .md files to caveman prose. Saves ~46% input tokens. |
-| **caveman-stats** | `/caveman-stats` | Show estimated tokens saved this session. |
+| **caveman-compress** | `/caveman-compress <file>` | Compress `.md` files to caveman prose. Validates that code, links and paths survive. |
+| **caveman-stats** | `/caveman-stats` | Show observed turns and output length for this session. |
 | **caveman-help** | `/caveman-help` | This card. |
 
 ## Cavecrew subagents

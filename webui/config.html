@@ -2,76 +2,147 @@
 <head>
   <title>Caveman Settings</title>
   <script type="module">
-    import { store } from "/components/plugins/plugin-settings-store.js";
+    import { callJsonApi } from "/js/api.js";
   </script>
 </head>
 <body>
-  <div x-data="{ liveLevel: null, liveEnabled: null, refreshing: false }">
+  <div x-data="{
+      liveLevel: null,
+      liveEnabled: null,
+      liveTurns: null,
+      liveChars: null,
+      refreshing: false,
+      statusError: '',
+
+      async refreshStatus() {
+        this.refreshing = true;
+        this.statusError = '';
+        try {
+          const chatId = globalThis.__context;
+          if (!chatId) {
+            this.liveEnabled = 'no chat selected';
+            this.liveLevel = null;
+            return;
+          }
+          // callJsonApi attaches the CSRF token and normalizes the endpoint.
+          const res = await callJsonApi('/api/plugins/caveman/caveman_state', {
+            action: 'get',
+            chat_id: chatId,
+          });
+          if (!res || res.ok !== true) {
+            this.statusError = (res && res.error) || 'state read failed';
+            this.liveEnabled = 'error';
+            this.liveLevel = null;
+            return;
+          }
+          this.liveLevel = res.level;
+          this.liveEnabled = res.enabled ? 'ON' : 'OFF';
+
+          const stats = await callJsonApi('/api/plugins/caveman/caveman_stats', {
+            action: 'get',
+            chat_id: chatId,
+          });
+          if (stats && stats.ok === true) {
+            this.liveTurns = stats.turns || 0;
+            this.liveChars = stats.chars || 0;
+          }
+        } catch (e) {
+          this.statusError = e && e.message ? e.message : String(e);
+          this.liveEnabled = 'error';
+          this.liveLevel = null;
+        } finally {
+          this.refreshing = false;
+        }
+      }
+    }">
 
     <div class="settings-section">
       <label><input type="checkbox" x-model="config.enabled" />
         <strong>Enable Caveman plugin</strong></label>
-      <small>Master switch. When ON, the caveman style is injected into every agent turn (when the active chat has caveman on).</small>
+      <small>Master switch. When ON, the caveman style is injected into every
+        agent turn whose chat has caveman switched on. A chat can still opt out
+        with <code>/caveman off</code> or the topbar selector.</small>
     </div>
 
     <div class="settings-section">
       <label><strong>Default compression level</strong></label>
       <select x-model="config.level">
-        <option value="lite">lite - drop filler, keep sentences</option>
+        <option value="lite">lite - no filler or hedging, keep full sentences</option>
         <option value="full">full - drop articles, fragments OK (default)</option>
-        <option value="ultra">ultra - extreme compression + strip filler</option>
+        <option value="ultra">ultra - extreme compression</option>
         <option value="wenyan-lite">wenyan-lite - semi-classical Chinese</option>
         <option value="wenyan-full">wenyan-full - full classical Chinese</option>
         <option value="wenyan-ultra">wenyan-ultra - extreme classical Chinese</option>
       </select>
-      <small>Default level for new chats. Each chat can override this via the topbar selector or <code>/caveman &lt;level&gt;</code>.</small>
+      <small>Default for chats with no override. Each chat can override this with
+        the topbar selector or <code>/caveman &lt;level&gt;</code>.</small>
     </div>
 
     <div class="settings-section">
       <label><input type="checkbox" x-model="config.auto_clarity" />
         <strong>Auto-clarity rules</strong></label>
-      <small>Recommended. When ON, the model is told to drop the caveman style on security warnings, destructive ops, and ambiguous multi-step sequences.</small>
-    </div>
-
-    <div class="settings-section">
-      <label><strong>Institutional Risk Floor: <span x-text="Number(config.risk_floor_pct || 6.0).toFixed(1)"></span>%</strong></label>
-      <input type="range" min="0" max="50" step="0.5" x-model.number="config.risk_floor_pct" style="width:100%" />
-      <small>The 6.0% Institutional Risk Floor. The right-canvas stats HUD turns RED when the rolling-10-turn average savings rate drops below this. Default: 6.0. Set to 0 to disable.</small>
+      <small>Recommended. Tells the model to drop caveman style for security
+        warnings, irreversible operations, and ambiguous multi-step
+        sequences, then resume.</small>
     </div>
 
     <div class="settings-section">
       <label><input type="checkbox" x-model="config.shrink_tools" />
-        <strong>Shrink tool descriptions (caveman-shrink)</strong></label>
-      <small>When ON, tool names + descriptions are compressed right before each LLM call. Saves input tokens. Recommended ON.</small>
+        <strong>Shrink tool descriptions</strong></label>
+      <small>Compress tool names and descriptions before each model call.
+        Off by default: tool descriptions are the contract the model reads when
+        it calls a tool, and over-eager compression can change what a tool
+        appears to do. Only enable this if you have measured the effect on your
+        own tool set.</small>
     </div>
 
     <div class="settings-section">
       <label><input type="checkbox" x-model="config.sanitize_responses" />
-        <strong>Strip filler from responses (ultra/wenyan only)</strong></label>
-      <small>When ON, the plugin actively rewrites the model output to remove banned filler phrases at ultra and wenyan-* levels.</small>
+        <strong>Strip filler from responses</strong></label>
+      <small>Delete banned filler phrases from the model's own output at the
+        <code>ultra</code> and <code>wenyan-*</code> levels. Off by default:
+        this is phrase deletion, not rewriting, so removing an opener such as
+        "Sure!" can leave a sentence fragment behind. Every strip is logged as
+        a warning. Does nothing at <code>lite</code> and <code>full</code>.</small>
     </div>
 
     <hr style="margin: 16px 0; opacity: 0.3;" />
 
     <div class="settings-section">
       <h4 style="margin: 0 0 8px 0;">Live status (current chat)</h4>
-      <small>Verify the plugin is wired for the current chat. The right-canvas stats HUD will start ticking after a few messages.</small>
+      <small>Verifies that the plugin is wired for the currently selected chat.</small>
       <div style="margin-top: 8px;">
-        <button type="button" class="button"
-                @click="refreshing = true; const cid = $store.chats && $store.chats.selected; if (cid) { try { const r = await fetch('/api/plugins/caveman/caveman_state', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action:'get', chat_id: cid}) }); const j = await r.json(); liveLevel = (j && j.enabled === false) ? 'off' : (j && j.level) || 'full'; liveEnabled = (j && j.enabled) ? 'ON' : 'OFF'; } catch (e) { liveEnabled = 'error: ' + e.message; } } else { liveEnabled = 'no chat selected'; } refreshing = false;"
+        <button type="button" class="button" @click="refreshStatus()"
                 :disabled="refreshing">
-          Refresh status
+          <span x-text="refreshing ? 'Checking…' : 'Refresh status'"></span>
         </button>
+        <span x-show="statusError" x-text="statusError"
+              style="margin-left: 10px; color: var(--color-error); font-size: 11px;"></span>
       </div>
-      <div x-show="liveLevel !== null || liveEnabled !== null" style="margin-top: 10px; padding: 8px; background: rgba(255,255,255,0.04); border-radius: 4px; font-size: 12px;">
-        <div><strong>Current chat level:</strong> <span x-text="liveLevel || '-'" style="font-family: monospace;"></span></div>
-        <div><strong>Plugin enabled for current chat:</strong> <span x-text="liveEnabled || '-'" style="font-family: monospace;"></span></div>
+      <div x-show="liveLevel !== null || liveEnabled !== null"
+           style="margin-top: 10px; padding: 8px; background: rgba(255,255,255,0.04); border-radius: 4px; font-size: 12px;">
+        <div><strong>Level for this chat:</strong>
+          <span x-text="liveLevel || '-'" style="font-family: monospace;"></span></div>
+        <div><strong>Caveman active:</strong>
+          <span x-text="liveEnabled || '-'" style="font-family: monospace;"></span></div>
+        <div x-show="liveTurns !== null"><strong>Observed turns:</strong>
+          <span x-text="liveTurns" style="font-family: monospace;"></span></div>
+        <div x-show="liveChars !== null"><strong>Observed output characters:</strong>
+          <span x-text="liveChars" style="font-family: monospace;"></span></div>
       </div>
+      <p style="margin: 10px 0 0 0; font-size: 11px; opacity: 0.75;">
+        These are raw counts of what the model actually produced. They are not
+        a savings figure: measuring a saving requires running the same task
+        with caveman off and comparing billed totals.
+      </p>
     </div>
 
     <div class="settings-section">
       <h4 style="margin: 16px 0 8px 0;">Where state is stored</h4>
-      <small>Per-chat state: <code>&lt;workdir&gt;/.caveman/state.json</code>. Lifetime stats: <code>&lt;workdir&gt;/.caveman/stats.json</code>. HWM + risk floor live in the stats file.</small>
+      <small>
+        Per-chat level and enabled flag: <code>&lt;workdir&gt;/.caveman/state.json</code>.<br>
+        Observed turn and character counts: <code>&lt;workdir&gt;/.caveman/stats.json</code>.
+      </small>
     </div>
 
   </div>

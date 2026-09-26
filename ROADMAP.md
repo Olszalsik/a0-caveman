@@ -1,180 +1,132 @@
-# Caveman Plugin - Roadmap & Recommendations
+# Caveman Plugin - Roadmap
 
-**Current state:** v0.4.0, 38+ files, ~2200 LoC, health check PASSED, v2.2 compatible.
+**Current state:** v0.5.0. 45 unit tests, 13 health-check self-tests, health
+check PASSED. Agent Zero v2.2 compatible.
 
----
-
-## Phase 1: Testing & Hardening (v0.4.1) - ~1 day
-
-### 1.1 Real-world smoke test
-- Open a real Agent Zero chat, type /caveman ultra, verify the level switches
-- Send 5+ messages, verify the stats HUD updates in the right canvas
-- Switch to /caveman off, verify the style reverts
-- Test all 6 intensity levels with a real LLM
-- Test the WebUI selector button (click each level, verify the badge updates)
-- Test the response sanitizer (send a prompt that would normally produce filler, verify it gets stripped at ultra level)
-- Test the tool shrinker (enable caveman, verify tool descriptions are shorter in the LLM payload)
-
-### 1.2 Unit tests
-- Add tests/helpers/test_state.py: roundtrip, clear, invalid-level rejection, concurrent access
-- Add tests/test_slash_commands.py: all 6 slash patterns + natural phrases + edge cases
-- Add tests/test_validator.py: banned filler detection, strip mode, warning emission
-- Add tests/test_stats.py: HWM tracking, rolling window, risk floor breach, risk floor tuning
-
-### 1.3 Benchmark with a real model
-- Run benchmarks/run.py with a real litellm model (not --dry-run)
-- Compare the 63.5% dry-run estimate against real output token counts
-- Publish results in benchmarks/results/ for reproducibility
+This roadmap was written during v0.4.0, when the plugin had no tests and three
+of its features could not execute. Those items are marked done rather than
+proposed. Items that were built on a retracted number or on an extension point
+that carries no data are marked removed, with the reason, so they are not
+re-attempted.
 
 ---
 
-## Phase 2: Community Publishing (v0.5.0) - ~2 days
+## Done in v0.5.0
 
-### 2.1 Standalone GitHub repo
-- Create a new repo (e.g. agent0ai/caveman-a0 or yourname/caveman-a0)
-- Copy the plugin contents to the repo root (not in a subfolder)
-- Ensure plugin.yaml has the name field matching the index folder name
-- Add a proper LICENSE (MIT, already done)
-- Add a CHANGELOG.md documenting v0.1.0 through v0.4.0
-- Add CONTRIBUTING.md for community contributors
-- Add 3-5 screenshots for the Plugin Hub (topbar selector, stats HUD, dropdown, icon)
+Correctness. Three features shipped non-functional and now work:
 
-### 2.2 Plugin Index submission
-- Fork agent0ai/a0-plugins
-- Create plugins/caveman/ folder
-- Add index.yaml with title, description, github URL, tags, screenshots
-- Add a square thumbnail (thumbnail.png, max 20KB)
-- Open a PR, wait for CI validation, address any feedback
+- The slash command could never match. It probed `loop_data.last_user_message`
+  and gated every branch on `isinstance(obj, str)`, but `LoopData` has no such
+  attribute and `user_message` is a `history.Message`. Now reads
+  `Message.output_text()`.
+- The topbar dropdown POSTed an action the API did not implement, got HTTP 200
+  with `{"ok": false}`, and updated the label anyway. Added a real atomic
+  `set` action and made the client check `ok`.
+- The response validator sat on `response_stream_end`, which is called with
+  only `loop_data=` and builds a fresh `kwargs` dict per extension. Moved to
+  `message_loop_result`, where a mutation actually reaches history.
+- The tool shrinker sat on `message_loop_prompts_before`, which fires before any
+  tool payload exists. Moved to `chat_model_call_before`.
+- State resolved from `AGENT_WORKDIR` / `A0_WORKDIR`, which the framework never
+  sets, so every install on a host shared one directory outside the workdir.
+  Now uses `get_settings()["workdir_path"]`.
 
-### 2.3 Documentation site
-- Port the upstream HONEST-NUMBERS.md to the a0 context
-- Write a quick-start guide for new users (3 steps: install, enable, use)
-- Document the HTTP API endpoints (caveman_state + caveman_stats)
-- Document the extension points used and why
+Honesty. The headline 65% figure was upstream's retracted number
+(`docs/HONEST-NUMBERS.md`: output reduction "Not published"). Removed from the
+manifest, hub index, README, DOX, prompts and skills. The stats store now records
+observed turns and characters and nothing else, and `execute.py` fails if an
+unverifiable percentage reappears.
 
----
+Benchmark. The old harness never used the plugin's prompts, had no control arm,
+and reported a figure that simplified algebraically to its own hardcoded
+constant. Replaced with a two-arm A/B (`__baseline__`, `__terse__`, one arm per
+level) that calls a real model, reports median/mean/min/max/stdev, records raw
+output, and reports a break-even against the prompt's input cost.
 
-## Phase 3: Polish & UX (v0.5.1) - ~1 day
+Tests. `tests/test_caveman.py` (45) and `tests/test_healthcheck.py` (13). The
+second mutates one thing at a time and asserts the health check catches each
+one, so the check cannot become a rubber stamp.
 
-### 3.1 Settings UI page
-- Create webui/config.html for Settings -> Developer -> Caveman
-- Fields: enabled (toggle), level (dropdown), auto_clarity (toggle), risk_floor_pct (slider)
-- Use the a0 plugin-settings-store pattern
-- This replaces the need to edit default_config.yaml manually
-
-### 3.2 Keyboard shortcut
-- Add Ctrl+Shift+C to toggle caveman on/off for the current chat
-- Implement via a small JS listener in the page-head extension
-
-### 3.3 /caveman-stats slash command
-- Add a monologue_start pattern for /caveman-stats
-- When matched, query the stats API and format a one-line summary in chat
-- Format: [caveman-stats] turns=12 tokens_saved=342 hwm=45 risk=ok
-
-### 3.4 Statusline badge in chat input
-- Add a small badge near the chat input showing the current caveman level
-- Use the set_messages_before_loop webui extension point
-- Shows: a small colored dot + level name (e.g. a brown dot + ultra)
-
-### 3.5 Icon improvements
-- Create a PNG fallback (thumbnail.png, 128x128, for the Plugin Hub)
-- Consider an animated SVG (caveman blinking or stick tapping) for the topbar
-- Add a dark-mode variant if the current icon does not read well on dark themes
+Also: per-chat state, tool-description compression ported from upstream
+`compress.js` (protected segments, `(?<![\w-])` boundaries, position-matched
+`sure`, CJK guard), a validated `caveman-compress` CLI, a mode-transition log,
+one level-filtered intensity ruleset instead of seven drifted prompt files, and
+subagent profiles moved to the `agent.system.main.specifics.md` slot.
 
 ---
 
-## Phase 4: Advanced Features (v0.6.0) - ~3-4 days
+## Still worth doing
 
-### 4.1 Auto-level selection
-- Monitor response length and complexity over the first 5 turns
-- If responses are consistently short (< 200 chars), suggest downgrading to lite
-- If responses are consistently long (> 1000 chars), suggest upgrading to ultra
-- Implement as an advisory chat_extras message, not an automatic switch
-- Add a config flag auto_level_suggest: true/false
+### 1. Real-world smoke test (do this first)
 
-### 4.2 Per-project defaults
-- Store a default caveman level per project (not just per chat)
-- When a new chat starts in a project, inherit the project default
-- Add a project-level config UI in the project settings modal
-- Falls back to the global default_config.yaml level
+The plugin has never been exercised inside a running Agent Zero chat. Every
+test here stubs the framework, so the extension wiring itself is unverified
+against a live runtime.
 
-### 4.3 Memory integration
-- When the user consistently picks the same level across 10+ chats, memorize it
-- Use memory_save to store: user prefers caveman level X
-- On new chat start, suggest the memorized level via chat_extras
+- Reload the WebUI, open a chat, type `/caveman ultra`, confirm the level applies.
+- Switch through all six levels, then `/caveman off`, confirm the style reverts.
+- Click every entry in the topbar selector, including `off`.
+- Enable `shrink_tools`, confirm tool descriptions shorten and that tool calls
+  still resolve.
+- Enable `sanitize_responses` at `ultra`, confirm a filler opener is stripped and
+  logged.
+- Check `Settings -> Developer -> Caveman` binds and saves.
 
-### 4.4 MCP server wrapper
-- Port the upstream caveman-shrink MCP middleware to a0
-- Wrap external MCP tool descriptions before they reach the LLM
-- Use the message_loop_prompts_before extension (already wired for tool shrinking)
-- Add a config flag mcp_shrink: true/false
+### 2. Benchmark with a real model
 
-### 4.5 Multi-language detection
-- Auto-detect the user dominant language from the first 3 messages
-- If non-CJK language, skip wenyan-* levels in the dropdown (or grey them out)
-- If CJK language, highlight wenyan-* levels as recommended
-- Store the detected language in the per-chat state
+```bash
+python benchmarks/run.py --model gpt-4o-mini --repeats 3 --output results.json
+```
 
-### 4.6 Custom level editor
-- Add a 7th option in the dropdown: Custom...
-- Opens a modal where the user can define their own compression rules
-- Rules: drop articles (yes/no), drop filler (yes/no), max sentence length, etc.
-- Stored as a custom level in the per-chat state
+Commit the raw file alongside any number quoted from it. Upstream's bar is
+committed raw pairs plus separate review, not a headline percentage.
 
----
+### 3. Community publishing
 
-## Phase 5: Enterprise & Integration (v0.7.0) - ~5+ days
+`plugin-hub/index.yaml` and `thumbnail.png` are ready and the public repo
+exists. A `CHANGELOG.md` covering 0.1.0 through 0.5.0 and a `CONTRIBUTING.md`
+are still missing, and the description should be re-read now that it no longer
+claims a percentage.
 
-### 5.1 Per-agent-profile overrides
-- Allow specific agent profiles to have different caveman defaults
-- Store in the plugin config with a per_profile section
-- Example: researcher profile defaults to lite, coder defaults to ultra
+### 4. Polish
 
-### 5.2 Audit logging
-- Log every level change with timestamp, chat_id, old_level, new_level
-- Store in /a0/usr/workdir/.caveman/audit.log
-- Add an API endpoint to query the audit log
-- Add a WebUI panel to view recent level changes
+- Keyboard shortcut to toggle caveman for the current chat.
+- `/caveman-stats` as a slash command. It is a skill today; a command would be
+  more discoverable. Format the observed numbers, not a saving.
+- A level badge near the chat input.
+- Dark-mode icon variant if the current one does not read on dark themes.
 
-### 5.3 External monitoring integration
-- Export stats as Prometheus metrics via a new API endpoint
-- Add a Grafana dashboard template
-- Support webhook notifications on risk floor breach
-- Add a Slack/Discord notification option for breach events
+### 5. Optional
 
-### 5.4 Scheduler integration
-- Allow scheduled caveman on/off times (e.g. caveman on during work hours, off during meetings)
-- Use the a0 scheduler to create a recurring task that toggles the level
-- Add a UI in the settings page to configure the schedule
-
-### 5.5 Multi-chat sync
-- Add a global level option that syncs across all chats
-- When the user picks a level in one chat, it applies to all chats
-- Config flag: global_sync: true/false (default false, per-chat is the default)
+- **Per-project defaults.** Per-chat works; per-project is the natural next
+  scope. `plugin.yaml` would need `per_project_config: true`.
+- **Memory integration.** If the user picks the same level across many chats,
+  remember it and suggest it on a new chat. Advisory only.
+- **Per-profile defaults.** `plugin.yaml` would need `per_agent_config: true`.
+- **Auto-level suggestion.** Advisory, never automatic.
+- **Multi-chat sync.** A config flag defaulting to off; per-chat is the default.
+- **Prometheus export** of the observation counters.
+- **MCP server wrapper.** Upstream ships `caveman-shrink` as an MCP middleware
+  for external tool descriptions. Local tool shrinking already works via
+  `chat_model_call_before`; the MCP path would cover tools from other servers.
 
 ---
 
-## Recommendation: What to do FIRST
+## Removed, with the reason
 
-**Do Phase 1 (Testing & Hardening) first.** The plugin is built and the health check passes, but it has not been tested in a real Agent Zero chat yet. The slash command detector uses best-effort attribute guessing to find the user message, and the stats tracker reads loop_data attributes that might not exist in v2.2. A 30-minute real-world smoke test will catch any integration issues before you invest in community publishing.
-
-**Then Phase 2 (Community Publishing).** Once the smoke test passes, publish to the a0-plugins index. This gives you discoverability and lets other users test the plugin on different setups, which catches edge cases you would not find alone.
-
-**Then Phase 3 (Polish & UX).** The Settings UI page is the highest-impact piece here - without it, users have to edit YAML to enable the plugin, which is a barrier to adoption.
-
-**Phase 4 and 5 are optional.** They add real value but are not needed for a v1.0 release. Pick the ones that match your use case:
-- If you use caveman daily: 4.2 (per-project defaults) + 4.3 (memory integration)
-- If you manage a team: 5.1 (per-profile overrides) + 5.2 (audit logging)
-- If you monitor costs: 5.3 (external monitoring)
-- If you want max savings: 4.1 (auto-level) + 4.4 (MCP wrapper)
-
----
-
-## Quick-win checklist (if you have 30 minutes right now)
-
-1. Reload the WebUI, open a chat, click the Caveman selector, pick ultra
-2. Send 3 messages, verify the responses are compressed
-3. Open the right canvas, verify the stats HUD shows turns + tokens saved
-4. Click the selector again, pick off, verify the next response is normal
-5. Run: python /a0/usr/plugins/caveman/benchmarks/run.py --dry-run
-6. If all 5 pass, the plugin is ready for Phase 2 (publishing)
+- **A "risk floor" HUD and `risk_floor_pct`.** The setting was bound in the
+  settings UI and read by nothing. A risk floor needs a measured quality signal
+  and a threshold that means something; inventing both produced a slider that
+  did nothing. If this is wanted, it needs a real quality metric first.
+- **High-water-mark and rolling-window stats** (`hwm`, `risk=ok`). Never
+  implemented, and the format string that referenced them would have printed
+  invented values.
+- **A `caveman-stats` HUD showing "tokens saved".** There is no control arm at
+  runtime, so there is no saving to show. The HUD, such as it is, shows observed
+  turns and characters and labels them as observations.
+- **Benchmarking against a "63.5% dry-run estimate".** The dry run returned a
+  number algebraically equal to its own input constant. It is gone; there is no
+  number without a model call.
+- **Growing the `REDUCTION_FRACTION` table.** That table is the retracted
+  figure. Re-adding it in any form is a regression, and `execute.py` fails if a
+  per-level ratio table reappears.

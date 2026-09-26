@@ -1,0 +1,10 @@
+# Normalize line endings in the repository.
+#
+# The plugin is installed into Linux Agent Zero instances, so the committed
+# form should be LF. Without this, Windows clones produce CRLF-only diffs
+# across every file and `git status` stays dirty after a checkout.
+* text=auto eol=lf
+
+# Binary assets: never touch.
+*.png binary
+*.svg text eol=lf

@@ -22,12 +22,13 @@
 #   - remote repo root must contain LICENSE (it does: MIT, retains
 #     upstream Julius Brussee copyright)
 
-title: Caveman (token-compressed replies)
+title: Caveman (compressed replies)
 description: >-
-  Cuts output tokens by roughly 65% while keeping full technical accuracy by
-  having the agent answer in compressed caveman-speak, across six intensity
-  levels including Classical Chinese modes. Toggleable per chat from the
-  WebUI, with live response validation and cumulative token-savings stats.
+  Squeezes the assistant's own wording into short, accurate prose by having it
+  answer in caveman-speak, across six intensity levels including Classical
+  Chinese modes. Toggleable per chat from the WebUI or with a /caveman slash
+  command. Reports observed output length, not a claimed savings percentage:
+  the upstream 65% headline was retracted and this plugin does not repeat it.
 github: https://github.com/Olszalsik/a0-caveman
 tags:
   - prompting

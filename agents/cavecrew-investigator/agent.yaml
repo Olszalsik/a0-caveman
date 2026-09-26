@@ -1,9 +1,8 @@
 title: Cavecrew Investigator
 description: |
- Read-only code locator. Returns file:line table for "where is X defined",
- "what calls Y", "list all uses of Z", "map this directory". Output is
- caveman-compressed so the main thread eats ~60% fewer tokens than
- vanilla. Refuses to suggest fixes.
+ Read-only code locator. Returns a file:line table for "where is X defined",
+ "what calls Y", "list all uses of Z", "map this directory". Reports facts
+ only and refuses to suggest fixes.
 
  Use with call_subordinate(profile="cavecrew-investigator").
 context: |

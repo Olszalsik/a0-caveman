@@ -1,0 +1,311 @@
+# Caveman plugin - health check self-test (P0.5 verification)
+#
+# A health check that cannot fail is the defect this file exists to prevent.
+# Each case below breaks one thing, runs execute.py, and asserts it failed
+# for the RIGHT reason (matched on the message, not just the exit code).
+#
+#   python usr/plugins/caveman/tests/test_healthcheck.py
+#
+# Run from anywhere; paths are derived from this file's location.
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PLUGIN = os.path.abspath(os.path.join(HERE, ".."))
+EXECUTE = os.path.join(PLUGIN, "execute.py")
+
+# Keys of the files we mutate, so every case can restore them.
+MUTATED = {
+    "config": os.path.join(PLUGIN, "config.json"),
+    "dropdown": os.path.join(PLUGIN, "webui", "caveman-dropdown.js"),
+    "config_html": os.path.join(PLUGIN, "webui", "config.html"),
+    "readme": os.path.join(PLUGIN, "README.md"),
+    "execute": os.path.join(PLUGIN, "execute.py"),
+    "command": os.path.join(
+        PLUGIN, "extensions", "python", "monologue_start", "_30_caveman_command.py"
+    ),
+    "state": os.path.join(PLUGIN, "helpers", "state.py"),
+    "investigator_prompt": os.path.join(
+        PLUGIN,
+        "agents",
+        "cavecrew-investigator",
+        "prompts",
+        "agent.system.main.specifics.md",
+    ),
+    "builder_prompt": os.path.join(
+        PLUGIN,
+        "agents",
+        "cavecrew-builder",
+        "prompts",
+        "agent.system.main.specifics.md",
+    ),
+    "intensity": os.path.join(PLUGIN, "prompts", "caveman.intensity.md"),
+    "help_skill": os.path.join(PLUGIN, "skills", "caveman-help", "SKILL.md"),
+}
+
+
+def run_check():
+    proc = subprocess.run(
+        [sys.executable, EXECUTE], capture_output=True, text=True, cwd=PLUGIN
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def read(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def write(path, text):
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+class Case:
+    """Mutate one file, assert the check fails, always restore."""
+
+    def __init__(self, name, key, mutate, expect):
+        self.name = name
+        self.key = key
+        self.mutate = mutate
+        self.expect = expect
+
+    def run(self):
+        path = MUTATED[self.key]
+        original = read(path)
+        try:
+            write(path, self.mutate(original))
+            code, out = run_check()
+            if code == 0:
+                return False, f"{self.name}: check PASSED but should have failed"
+            if self.expect not in out:
+                return False, (
+                    f"{self.name}: failed for the wrong reason; "
+                    f"expected {self.expect!r} in output"
+                )
+            return True, f"{self.name}: correctly detected"
+        finally:
+            write(path, original)
+
+
+# --- mutations -------------------------------------------------------------
+
+
+def add_dead_config_key(text):
+    data = json.loads(text)
+    data["risk_floor_pct"] = 25
+    return json.dumps(data)
+
+
+def break_action_name(text):
+    # The exact defect that shipped: frontend sends an action the API lacks.
+    return text.replace('action: "set"', 'action: "setLevel"')
+
+
+def bind_unknown_setting(text):
+    return text.replace(
+        'x-model="config.auto_clarity"', 'x-model="config.risk_floor_pct"', 1
+    )
+
+
+def break_command_regex(text):
+    # Collapse the level alternation so no level can ever match.
+    target = "_LEVELS = " + '"' + "|".join("") + '"'  # placeholder, unused
+    original = '_LEVELS = "|".join(re.escape(level) for level in caveman_state.VALID_LEVELS)'
+    assert original in text, "command module no longer has the expected _LEVELS line"
+    return text.replace(original, "_LEVELS = 'nomatch'")
+
+
+def break_state_path(text):
+    # Reintroduce the machine-global fallback instead of the workdir.
+    original = 'workdir = (get_settings() or {}).get("workdir_path")'
+    assert original in text, "state module no longer resolves the workdir"
+    return text.replace(
+        original,
+        "workdir = os.path.join(os.path.expanduser('~'), '.cache', 'agent0', 'caveman')",
+    )
+
+
+def bare_fetch(text):
+    return text.replace("await fetchApi(STATE_URL, {", "await fetch(STATE_URL, {").replace(
+        'import { fetchApi } from "/js/api.js";', ""
+    )
+
+
+def add_fast_poll(text):
+    return text.replace("}, 15000);", "}, 2000);")
+
+
+def reinstate_claim(text):
+    # The exact retracted headline, asserted as fact.
+    return text.replace(
+        "Squeezes the assistant's own wording",
+        "Cuts 65% of output tokens (measured) by squeezing the assistant's own wording",
+        1,
+    )
+
+
+def wrong_prompt_slot(text):
+    # Reintroduce the original, false claim: agent.yaml has no tool field, so
+    # `Bash` is present and only self-restraint prevents its use.
+    original = "No `Bash`: do not shell out"
+    assert original in text, "builder prompt no longer has the expected limit line"
+    return text.replace(
+        original, "No `Bash` available - cannot shell out", 1
+    )
+
+
+def add_wrong_slot_file(text):
+    # Restore the old role.md slot name in the required-file list.
+    return text.replace("agent.system.main.specifics.md", "agent.system.main.role.md")
+
+
+def break_intensity_fence(text):
+    # Reintroduce HTML-comment fences, which the loader strips along with the
+    # maintainer notes, so every level silently disappears.
+    return text.replace("[intensity:", "<!-- intensity:").replace(
+        "lite]\n", "lite -->\n", 1
+    ).replace("[/intensity]", "<!-- /intensity -->")
+
+
+def add_estimator_back(text):
+    # Reintroduce the fabricated ratio into the observation store.
+    return text.replace(
+        'DEFAULT_LEVEL = "full"',
+        'DEFAULT_LEVEL = "full"\nREDUCTION_FRACTION = {"full": 0.65}',
+    )
+
+
+def add_ratio_table(text):
+    # The shape a skill shipped: a bare per-level ratio list with no reduction
+    # word on the same line as the number.
+    anchor = "| **caveman-commit** |"
+    assert anchor in text, "caveman-help table no longer has the expected row"
+    return text.replace(anchor, "- `full`: ~65%\n" + anchor, 1)
+
+
+CASES = [
+    Case(
+        "config.json key nothing reads",
+        "config",
+        add_dead_config_key,
+        "no backend reads",
+    ),
+    Case(
+        "dropdown sends an unknown action",
+        "dropdown",
+        break_action_name,
+        "actions the API does not implement",
+    ),
+    Case(
+        "config.html binds an unknown setting",
+        "config_html",
+        bind_unknown_setting,
+        "binds keys no backend reads",
+    ),
+    Case(
+        "slash-command regex matches nothing",
+        "command",
+        break_command_regex,
+        "command misclassified",
+    ),
+    Case(
+        "state escapes the workdir",
+        "state",
+        break_state_path,
+        "outside the Agent Zero workdir",
+    ),
+    Case(
+        "dropdown drops CSRF helper",
+        "dropdown",
+        bare_fetch,
+        "bare fetch",
+    ),
+    Case(
+        "dropdown polls every 2s again",
+        "dropdown",
+        add_fast_poll,
+        "polls every 2000ms",
+    ),
+    Case(
+        "retracted savings claim returns",
+        "readme",
+        reinstate_claim,
+        "unverified savings claim",
+    ),
+    Case(
+        "profile claims a tool is unavailable",
+        "builder_prompt",
+        wrong_prompt_slot,
+        "claims a tool is unavailable",
+    ),
+    Case(
+        "health check expects the wrong prompt slot",
+        "execute",
+        add_wrong_slot_file,
+        "missing file",
+    ),
+    Case(
+        "intensity fences become HTML comments",
+        "intensity",
+        break_intensity_fence,
+        "intensity levels parsed",
+    ),
+    Case(
+        "fabricated estimator returns to the store",
+        "state",
+        add_estimator_back,
+        "REDUCTION_FRACTION",
+    ),
+    Case(
+        "a bare per-level ratio table returns",
+        "help_skill",
+        add_ratio_table,
+        "unverified savings claim",
+    ),
+]
+
+def main() -> int:
+    print("=" * 68)
+    print(" caveman health-check self-test")
+    print("=" * 68)
+
+    # Baseline: the unmodified plugin must pass.
+    code, out = run_check()
+    if code != 0:
+        print("FAIL: baseline health check did not pass:\n" + out)
+        return 1
+    print("OK   baseline health check passes")
+
+    failures = 0
+    for case in CASES:
+        passed, message = case.run()
+        print(("OK   " if passed else "FAIL ") + message)
+        if not passed:
+            failures += 1
+
+    # And it must still pass after everything is restored.
+    code, out = run_check()
+    if code != 0:
+        print("FAIL: health check broken after restore:\n" + out)
+        return 1
+    print("OK   health check passes again after restore")
+
+    print("=" * 68)
+    if failures:
+        print(f" {failures} of {len(CASES)} self-test cases FAILED")
+        print("=" * 68)
+        return 1
+    print(f" all {len(CASES)} self-test cases passed")
+    print("=" * 68)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
