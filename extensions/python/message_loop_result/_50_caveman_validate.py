@@ -45,6 +45,7 @@ from typing import Any
 
 from helpers.extension import Extension
 
+from usr.plugins.caveman.helpers import compat
 from usr.plugins.caveman.helpers import plugins_config as plugin_cfg
 from usr.plugins.caveman.helpers import state as caveman_state
 
@@ -143,6 +144,12 @@ class CavemanValidate(Extension):
         if result_data.get("skip_default_processing"):
             return
 
+        # See helpers/compat.py: a stale state module must not raise out of an
+        # extension point.
+        state = compat.state_api(caveman_state, self.agent)
+        if state is None:
+            return
+
         llm_result = result_data.get("llm_result")
         if llm_result is None:
             return
@@ -152,17 +159,15 @@ class CavemanValidate(Extension):
             return
 
         config = plugin_cfg.get_config()
-        chat_id = _chat_id(agent)
-        if not caveman_state.resolve(chat_id, config)["enabled"]:
+        chat_id = _chat_id(self.agent)
+        if not state.resolve(chat_id, config)["enabled"]:
             return
 
         matches = BANNED_RE.findall(text)
         if not matches:
             return
 
-        level = caveman_state.get_level(
-            chat_id, config.get("level", caveman_state.DEFAULT_LEVEL)
-        )
+        level = state.get_level(chat_id, config.get("level", state.DEFAULT_LEVEL))
 
         should_strip = (
             plugin_cfg.get_bool("sanitize_responses")

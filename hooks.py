@@ -21,7 +21,7 @@ import logging
 log = logging.getLogger(__name__)
 
 PLUGIN_NAME = "caveman"
-PLUGIN_VERSION = "0.5.0"
+PLUGIN_VERSION = "0.5.1"
 
 
 def install() -> None:

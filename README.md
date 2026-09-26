@@ -239,6 +239,38 @@ percentage reappears.
 `tests/test_healthcheck.py` mutates one thing at a time and asserts the check
 catches each one, so the check cannot rot into a rubber stamp.
 
+## Troubleshooting
+
+### `AttributeError: module 'usr.plugins.caveman.helpers.state' has no attribute 'resolve'`
+
+The plugin directory is mixing file versions: some modules are current and
+`helpers/state.py` is older. It is not a logic bug and no single file explains
+it, which is why the traceback points at an innocent line.
+
+Fix it by replacing the whole plugin directory in one step, not file by file:
+
+```bash
+cd <agent-zero-root>
+rm -rf usr/plugins/caveman
+# copy the plugin back, completely
+python usr/plugins/caveman/execute.py    # must print 'health check PASSED'
+```
+
+Clearing `__pycache__` alone does not help, because the stale source file is
+what gets loaded.
+
+Since v0.5.1 this no longer breaks a chat turn. The plugin detects the
+mismatch, logs one warning naming the cause, and skips itself for the turn; the
+API keeps serving reads and refuses writes. `execute.py` also reports it
+directly instead of crashing:
+
+```
+[caveman] FAIL: helpers/state.py does not provide the API the shipped modules call: resolve
+[caveman] stopping: the remaining checks call the state module directly and would fail the same way.
+```
+
+`python usr/plugins/caveman/tests/test_healthcheck.py` covers this case.
+
 ## License & attribution
 
 MIT. Original caveman plugin by Julius Brussee

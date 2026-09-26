@@ -2,7 +2,7 @@
 
 > Squeezes the assistant's own wording into ultra-short form while keeping full technical accuracy. Prompt-based: it changes how the model writes, not what it knows.
 
-**Version:** 0.5.0 · **Plugin ID:** `caveman`
+**Version:** 0.5.1 · **Plugin ID:** `caveman`
 
 ## Purpose
 
@@ -38,6 +38,8 @@ issue #145. `benchmarks/run.py` reports a break-even figure for this.
 - `helpers/plugins_config.py` — the only reader of plugin config
 - `helpers/state.py` — the only writer of every file the plugin owns
   (`state.json`, `stats.json`, `mode-log.jsonl`)
+- `helpers/compat.py` — cross-module capability guard. Imports nothing from the
+  rest of the plugin, so it keeps working when its siblings are stale.
 - `helpers/prompts.py` — the only reader of `prompts/`, and the only place the
   injected prompt is assembled. The benchmark calls it too.
 - `helpers/compress.py` — prose compressor, ported from upstream
@@ -79,14 +81,20 @@ issue #145. `benchmarks/run.py` reports a break-even figure for this.
 - **One lock, one writer.** All state and observation file access goes through
   `helpers/state.py` so a concurrent extension and API request cannot lose each
   other's read-modify-write.
-- **Resolve enabled + level through `caveman_state.resolve(chat_id, config)`.**
-  Every extension must. Resolving the default level and the enabled flag
-  independently is how the WebUI and the prompt injector previously disagreed
-  about the same chat.
-- **`execute.py` must be able to fail.** Do not downgrade a failed import or a
-  failed assertion to a warning. `tests/test_healthcheck.py` mutates one thing
-  at a time and asserts the check catches each one; run it after touching
-  anything the check inspects.
+- **Resolve enabled + level through `state.resolve(chat_id, config)`**, reached
+  via `compat.state_api(caveman_state, agent)`. Every extension and API handler
+  must. Resolving the default level and the enabled flag independently is how
+  the WebUI and the prompt injector previously disagreed about the same chat.
+- **Never raise out of an extension point.** `agent.handle_exception` re-raises,
+  so an exception here kills the agent turn, not just the plugin. This plugin is
+  optional and every one of its hooks is cosmetic or observational, so a
+  problem must degrade: `compat.state_api()` returns `None` and the caller
+  returns immediately. A partial upgrade once killed a turn this way
+  (`AttributeError: ... has no attribute 'resolve'`, v0.5.1).
+- **`execute.py` must be able to fail, and must not fail the way its subject
+  fails.** `check_module_contract` runs before any check that touches the state
+  module, because `check_state` calls `state.resolve` itself and would otherwise
+  raise the identical `AttributeError` instead of diagnosing it.
 - **The prompt is assembled in exactly one place**, `helpers/prompts.build_system_prompt`.
   The `system_prompt` extension and `benchmarks/run.py` both call it, so the
   benchmark cannot measure something other than what is sent. Do not re-read

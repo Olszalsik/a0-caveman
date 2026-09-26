@@ -24,6 +24,7 @@ All handlers return HTTP 200 with an `ok` flag, so the client must check
 
 from helpers.api import ApiHandler  # type: ignore
 
+from usr.plugins.caveman.helpers import compat
 from usr.plugins.caveman.helpers import plugins_config as plugin_cfg
 from usr.plugins.caveman.helpers import state as caveman_state
 
@@ -35,9 +36,28 @@ def _payload(input_data) -> dict:
     return input_data if isinstance(input_data, dict) else {}
 
 
+def _valid_levels() -> tuple:
+    try:
+        return tuple(caveman_state.VALID_LEVELS)
+    except Exception:
+        return ("lite", "full", "ultra", "wenyan-lite", "wenyan-full", "wenyan-ultra")
+
+
 def _resolved(chat_id: str) -> dict:
-    """Current level + enabled for a chat, defaults from the plugin config."""
-    return caveman_state.resolve(chat_id, plugin_cfg.get_config())
+    """Current level + enabled for a chat, defaults from the plugin config.
+
+    Falls back to the configured defaults when `helpers/state.py` is stale, so
+    the WebUI shows a usable state instead of a 500. See helpers/compat.py.
+    """
+    config = plugin_cfg.get_config()
+    state = compat.state_api(caveman_state)
+    if state is None:
+        level = config.get("level", "full")
+        return {
+            "enabled": bool(config.get("enabled", False)),
+            "level": level if level in _valid_levels() else "full",
+        }
+    return state.resolve(chat_id, config)
 
 
 def _error(message: str, action: str) -> dict:
@@ -50,13 +70,31 @@ class CavemanState(ApiHandler):
         action = data.get("action") or "get"
         chat_id = str(data.get("chat_id") or "")
 
+        # Refuse writes when the state module cannot support them, rather than
+        # raising AttributeError into a 500. Reads still work via _resolved.
+        state = compat.state_api(caveman_state)
+        needs_write = action in {"set", "set_level", "set_enabled", "clear"}
+        if needs_write and state is None:
+            return _error(
+                "helpers/state.py is an older version than this handler expects; "
+                "replace the whole plugin directory. See the plugin README.",
+                action,
+            )
+        levels = _valid_levels()
+
         if action == "list":
+            if state is None:
+                return {
+                    "ok": False,
+                    "action": "list",
+                    "error": "helpers/state.py is an older version; replace the plugin",
+                }
             return {
                 "ok": True,
                 "action": "list",
-                "chats": caveman_state.get_all_chats(),
+                "chats": state.get_all_chats(),
                 "config": plugin_cfg.get_config(),
-                "state_path": caveman_state.state_path(),
+                "state_path": state.state_path(),
             }
 
         if not chat_id:
@@ -83,11 +121,11 @@ class CavemanState(ApiHandler):
 
             if has_level and level is not None:
                 if not isinstance(level, str) or (
-                    level != "off" and level not in caveman_state.VALID_LEVELS
+                    level != "off" and level not in levels
                 ):
                     return _error(
                         f"invalid level: {level!r}. Must be 'off' or one of "
-                        f"{list(caveman_state.VALID_LEVELS)}",
+                        f"{list(levels)}",
                         action,
                     )
             if has_enabled and enabled is not None and not isinstance(enabled, bool):
@@ -108,9 +146,9 @@ class CavemanState(ApiHandler):
 
             # `enabled` is always meaningful at this point: either it came
             # from the request and was validated, or it was derived above.
-            ok = caveman_state.set_state(
+            ok = state.set_state(
                 chat_id,
-                level=level if has_level else caveman_state.KEEP,
+                level=level if has_level else state.KEEP,
                 enabled=enabled,
             )
             return {
@@ -123,14 +161,14 @@ class CavemanState(ApiHandler):
         if action == "set_level":
             level = data.get("level")
             if level is not None and (
-                not isinstance(level, str) or level not in caveman_state.VALID_LEVELS
+                not isinstance(level, str) or level not in levels
             ):
                 return _error(
                     f"invalid level: {level!r}. Must be null or one of "
-                    f"{list(caveman_state.VALID_LEVELS)}",
+                    f"{list(levels)}",
                     action,
                 )
-            ok = caveman_state.set_level(chat_id, level)
+            ok = state.set_level(chat_id, level)
             return {
                 "ok": ok,
                 "action": action,
@@ -142,7 +180,7 @@ class CavemanState(ApiHandler):
             enabled = data.get("enabled")
             if enabled is not None and not isinstance(enabled, bool):
                 return _error("enabled must be a boolean or null", action)
-            ok = caveman_state.set_enabled(chat_id, enabled)
+            ok = state.set_enabled(chat_id, enabled)
             return {
                 "ok": ok,
                 "action": action,
@@ -151,7 +189,7 @@ class CavemanState(ApiHandler):
             }
 
         if action == "clear":
-            ok = caveman_state.set_state(chat_id, level=None, enabled=None)
+            ok = state.set_state(chat_id, level=None, enabled=None)
             return {
                 "ok": ok,
                 "action": action,

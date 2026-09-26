@@ -36,6 +36,7 @@ from typing import Any
 
 from helpers.extension import Extension
 
+from usr.plugins.caveman.helpers import compat
 from usr.plugins.caveman.helpers import compress as caveman_compress
 from usr.plugins.caveman.helpers import plugins_config as plugin_cfg
 
@@ -94,7 +95,13 @@ class CavemanShrinkTools(Extension):
         # come from the same resolver every other extension uses.
         from usr.plugins.caveman.helpers import state as caveman_state
 
-        resolved = caveman_state.resolve(_chat_id(agent), plugin_cfg.get_config())
+        # See helpers/compat.py. Tool compression is opt-in and cosmetic, so
+        # failing soft costs nothing; raising would break the model call.
+        state = compat.state_api(caveman_state, agent)
+        if state is None:
+            return
+
+        resolved = state.resolve(_chat_id(agent), plugin_cfg.get_config())
         if not resolved["enabled"]:
             return
 

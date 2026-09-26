@@ -47,6 +47,13 @@ MUTATED = {
     ),
     "intensity": os.path.join(PLUGIN, "prompts", "caveman.intensity.md"),
     "help_skill": os.path.join(PLUGIN, "skills", "caveman-help", "SKILL.md"),
+    "style_extension": os.path.join(
+        PLUGIN,
+        "extensions",
+        "python",
+        "system_prompt",
+        "_20_caveman_style.py",
+    ),
 }
 
 
@@ -174,6 +181,22 @@ def break_intensity_fence(text):
     ).replace("[/intensity]", "<!-- /intensity -->")
 
 
+def strip_state_resolve(text):
+    # Simulate a partial upgrade: a v0.4.0-shaped state.py that lacks the v0.5.0
+    # API, sitting beside v0.5.0 callers. Every per-file check still passes, so
+    # only the cross-module contract check can catch this.
+    marker = "def resolve(chat_id: Optional[str], config: Optional[dict] = None) -> dict:"
+    assert marker in text, "state.py no longer has the expected resolve()"
+    return text.replace(marker, "def _removed_resolve(chat_id=None, config=None) -> dict:")
+
+
+def remove_compat_guard(text):
+    # Bypass the guard in the extension that produced the reported traceback.
+    original = "state = compat.state_api(caveman_state, self.agent)"
+    assert original in text, "style extension no longer has the expected guard"
+    return text.replace(original, "state = caveman_state  # guard removed", 1)
+
+
 def add_estimator_back(text):
     # Reintroduce the fabricated ratio into the observation store.
     return text.replace(
@@ -268,6 +291,18 @@ CASES = [
         "help_skill",
         add_ratio_table,
         "unverified savings claim",
+    ),
+    Case(
+        "state.py loses the v0.5.0 API (partial upgrade)",
+        "state",
+        strip_state_resolve,
+        "does not provide the API",
+    ),
+    Case(
+        "an extension drops the compat guard",
+        "style_extension",
+        remove_compat_guard,
+        "without compat.state_api",
     ),
 ]
 

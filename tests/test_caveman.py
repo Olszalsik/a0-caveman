@@ -156,6 +156,7 @@ def _load(relative: str, alias: str):
 
 
 state = _load("helpers/state.py", "cav_state")
+compat = _load("helpers/compat.py", "cav_compat")
 prompts = _load("helpers/prompts.py", "cav_prompts")
 cav_compress = _load("helpers/compress.py", "cav_compress")
 markdown = _load("helpers/markdown.py", "cav_markdown")
@@ -168,6 +169,7 @@ validate = _load(
 observe = _load(
     "extensions/python/message_loop_result/_60_caveman_observe.py", "cav_observe"
 )
+style = _load("extensions/python/system_prompt/_20_caveman_style.py", "cav_style")
 shrink = _load(
     "extensions/python/chat_model_call_before/_60_caveman_shrink_tools.py", "cav_shrink"
 )
@@ -785,6 +787,139 @@ def test_api_clear_and_list():
     assert state.get_entry(chat) == {}
     listing = _call(action="list")
     assert listing["ok"] and chat not in listing["chats"]
+
+
+# ---------------------------------------------------------------------------
+# Partial upgrade / stale state module
+#
+# Reproduces the reported production failure:
+#   AttributeError: module 'usr.plugins.caveman.helpers.state'
+#                   has no attribute 'resolve'
+# raised from _20_caveman_style.py:55, inside Agent.get_system_prompt, which
+# killed the agent turn. An extension from v0.5.0 sat beside a v0.4.0
+# helpers/state.py.
+# ---------------------------------------------------------------------------
+
+
+class StaleState:
+    """A v0.4.0-shaped state module: no resolve, no set_state, no record_turn."""
+
+    VALID_LEVELS = ("lite", "full", "ultra", "wenyan-lite", "wenyan-full", "wenyan-ultra")
+
+    @staticmethod
+    def get_level(chat_id, default="full"):
+        return default
+
+    @staticmethod
+    def is_enabled(chat_id, default_enabled):
+        return default_enabled
+
+    @staticmethod
+    def set_level(chat_id, level):
+        return False
+
+    @staticmethod
+    def set_enabled(chat_id, enabled):
+        return False
+
+    @staticmethod
+    def get_all_chats():
+        return {}
+
+
+def test_stale_state_is_detected():
+    compat.reset_warnings()
+    missing = compat.missing_state_api(StaleState)
+    assert "resolve" in missing
+    assert "set_state" in missing
+    assert compat.has_state_api(state) is True
+    assert compat.missing_state_api(state) == []
+
+
+def test_state_api_returns_none_and_warns_once():
+    compat.reset_warnings()
+    agent = Agent("_t_stale")
+    assert compat.state_api(StaleState, agent) is None
+    assert compat.state_api(state, agent) is state
+    assert len(agent.context.log.entries) == 1, "must warn exactly once"
+    message = agent.context.log.entries[0]["content"]
+    assert "partial upgrade" in message
+    assert "replace the whole plugin" in message.lower()
+    # Second call with the same message must not log again.
+    compat.state_api(StaleState, agent)
+    assert len(agent.context.log.entries) == 1
+
+
+def test_style_extension_degrades_instead_of_raising():
+    """The exact traceback the user hit must not happen any more."""
+    # The extension resolved its own `compat` through the package path, which
+    # is a different module object from the alias-loaded one above, so the
+    # warn-once registry has to be reset on that instance.
+    style.compat.reset_warnings()
+    agent = Agent("_t_stale_style")
+    original = style.caveman_state
+    try:
+        style.caveman_state = StaleState()
+        system_prompt = ["existing prompt"]
+        asyncio.run(
+            style.CavemanStyle(agent).execute(system_prompt=system_prompt)
+        )
+    finally:
+        style.caveman_state = original
+    assert system_prompt == ["existing prompt"], "must not inject anything"
+    assert any(
+        e.get("type") == "warning" and "partial upgrade" in e.get("content", "")
+        for e in agent.context.log.entries
+    ), agent.context.log.entries
+
+
+def test_observer_degrades_instead_of_raising():
+    observe.compat.reset_warnings()
+    agent = Agent("_t_stale_observe")
+    original = observe.caveman_state
+    try:
+        observe.caveman_state = StaleState()
+        result_data = {"llm_result": LLMResult("x" * 30, [Call("response")])}
+        asyncio.run(observe.CavemanObserve(agent).execute(result_data=result_data))
+    finally:
+        observe.caveman_state = original
+    # No exception, and nothing recorded into the real store.
+    assert state.get_stats("_t_stale_observe") == {}
+
+
+def test_validator_degrades_instead_of_raising():
+    validate.compat.reset_warnings()
+    agent = Agent("_t_stale_validate")
+    original = validate.caveman_state
+    text = "Sure! I'd be happy to help."
+    try:
+        validate.caveman_state = StaleState()
+        result_data = {"llm_result": LLMResult(text, [Call("response")])}
+        _run_validate(agent, result_data)
+    finally:
+        validate.caveman_state = original
+    assert result_data["llm_result"].response == text, "must not mutate"
+
+
+def test_state_api_reads_still_work_over_http():
+    compat.reset_warnings()
+    chat = _fresh("_t_stale_api")
+    original = api_state.caveman_state
+    try:
+        api_state.caveman_state = StaleState()
+        result = asyncio.run(api_state.CavemanState(None, None).process(
+            {"action": "get", "chat_id": chat}, None
+        ))
+        assert result["ok"] is True, "reads must not 500"
+        assert result["level"] == "full", "falls back to the configured default"
+
+        write = asyncio.run(api_state.CavemanState(None, None).process(
+            {"action": "set", "chat_id": chat, "level": "ultra"}, None
+        ))
+        assert write["ok"] is False
+        assert "older version" in write["error"]
+    finally:
+        api_state.caveman_state = original
 
 
 # ---------------------------------------------------------------------------

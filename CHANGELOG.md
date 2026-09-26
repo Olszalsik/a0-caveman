@@ -6,6 +6,44 @@ to the style rules and the level set.
 
 [upstream]: https://github.com/juliusbrussee/caveman
 
+## 0.5.1
+
+Fixes a reported production crash caused by a partial upgrade, and makes the
+plugin degrade instead of taking down the agent turn.
+
+### Fixed
+
+- **`AttributeError: module 'usr.plugins.caveman.helpers.state' has no attribute
+  'resolve'`, raised from `_20_caveman_style.py` inside
+  `Agent.get_system_prompt`, which killed the agent turn.** The plugin directory
+  held v0.5.0 extension modules beside a v0.4.0 `helpers/state.py`; `state.resolve`
+  is new in v0.5.0. `agent.handle_exception` re-raises, so an optional styling
+  plugin could abort a monologue. The same exposure existed in the two
+  `message_loop_result` extensions, the tool shrinker, and the state API.
+- **An optional plugin now degrades instead of raising.** `helpers/compat.py`
+  checks the state API before use. On a mismatch it logs one warning naming the
+  cause and the fix, then skips itself for the turn. Reads over HTTP keep
+  working and writes are refused with a reason, rather than the WebUI getting a
+  500.
+- **`execute.py` no longer crashes on the fault it is meant to diagnose.**
+  `check_state` ran before the new contract check and called `state.resolve`
+  itself, so a partial upgrade produced the identical `AttributeError` instead
+  of a diagnosis. The cross-module contract check now runs first and stops the
+  run with a clear message.
+
+### Added
+
+- `helpers/compat.py`: `REQUIRED_STATE_API`, `missing_state_api()`,
+  `state_api()`, and warn-once reporting.
+- A cross-module contract check in `execute.py`, which asks the loaded modules
+  what they call on each other. Per-file checks cannot see a version mismatch;
+  this is the question a partial upgrade gets wrong.
+- 6 tests: the stale-state module is reproduced, and each affected extension plus
+  the HTTP API is asserted to degrade. Two new mutation cases in
+  `tests/test_healthcheck.py` remove the v0.5.0 API from `state.py` and strip
+  the compat guard from an extension, and assert the health check catches both.
+  Suite is now 51 unit tests and 15 self-tests.
+
 ## 0.5.0
 
 Correctness, honesty, and tests. Three of the plugin's features could not

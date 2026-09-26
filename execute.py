@@ -36,7 +36,7 @@ import sys
 import types
 
 PLUGIN_NAME = "caveman"
-EXPECTED_VERSION = "0.5.0"
+EXPECTED_VERSION = "0.5.1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -108,6 +108,7 @@ REQUIRED_FILES = [
     "install.py",
     # helpers
     "helpers/state.py",
+    "helpers/compat.py",
     "helpers/plugins_config.py",
     "helpers/compress.py",
     "helpers/markdown.py",
@@ -318,6 +319,7 @@ def check_imports() -> dict:
     modules = {}
     targets = {
         "state": "helpers/state.py",
+        "compat": "helpers/compat.py",
         "plugins_config": "helpers/plugins_config.py",
         "compress": "helpers/compress.py",
         "markdown": "helpers/markdown.py",
@@ -378,7 +380,7 @@ def check_syntax() -> None:
 def check_state(modules: dict) -> None:
     state = modules.get("state")
     if state is None:
-        return
+        return True
 
     # In a standalone clone there is no Agent Zero workdir to stay inside, so
     # point the stub at a scratch directory rather than creating usr/workdir/
@@ -867,6 +869,65 @@ def check_prompts(modules: dict) -> None:
         )
 
 
+def check_module_contract(modules: dict) -> bool:
+    """Assert the cross-module API the extensions actually call.
+
+    A directory can pass every per-file check and still fail at runtime if it
+    mixes versions: an extension from v0.5.0 beside a `helpers/state.py` from
+    v0.4.0 compiles, parses, and imports, then raises
+    `AttributeError: module ... has no attribute 'resolve'` from inside
+    `get_system_prompt` and kills the agent turn.
+
+    Per-file checks cannot see that. This one asks the loaded modules what they
+    call on each other, which is the question a partial upgrade gets wrong.
+    """
+    compat = modules.get("compat")
+    if compat is None:
+        return True
+    state = modules.get("state")
+    if state is None:
+        return True
+
+    missing = compat.missing_state_api(state)
+    if missing:
+        fail(
+            "helpers/state.py does not provide the API the shipped modules "
+            f"call: {', '.join(missing)}"
+        )
+        return False
+
+    # Each caller must actually go through the guard, so a stale install fails
+    # soft instead of raising out of an extension point.
+    guarded = []
+    for alias in ("style", "validate", "observe", "shrink", "api_state"):
+        module = modules.get(alias)
+        if module is None:
+            continue
+        try:
+            source = _read_source(module)
+        except OSError:
+            continue
+        if "compat.state_api(" not in source:
+            fail(
+                f"{alias} calls the state module without compat.state_api(); "
+                f"a partial upgrade would raise out of an extension point"
+            )
+            return False
+        guarded.append(alias)
+
+    if guarded:
+        ok(f"cross-module contract holds; guarded callers: {guarded}")
+    return True
+
+
+def _read_source(module) -> str:
+    path = getattr(module, "__file__", None)
+    if not path:
+        return ""
+    with open(path, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
 def check_toggle() -> str:
     if os.path.isfile(os.path.join(HERE, ".toggle-1")):
         state = "ON"
@@ -910,26 +971,8 @@ def check_unit_tests() -> None:
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
-    print(f"[{PLUGIN_NAME}] plugin dir: {HERE}")
-    print(f"[{PLUGIN_NAME}] agent zero root: {ROOT}")
-
-    check_files()
-    check_manifest()
-    check_syntax()
-    modules = check_imports()
-    check_state(modules)
-    check_api_contract(modules)
-    check_commands(modules)
-    check_webui(modules)
-    check_icon()
-    check_agents()
-    check_tool_claims()
-    check_prompts(modules)
-    check_claims()
-    check_unit_tests()
-    state = check_toggle()
-
+def finish(state: str) -> int:
+    """Print the summary block and return the process exit code."""
     print()
     print("=" * 68)
     if failures:
@@ -943,6 +986,42 @@ def main() -> int:
     print(" stats are raw observations only; run benchmarks/run.py for a real A/B")
     print("=" * 68)
     return 0
+
+
+def main() -> int:
+    print(f"[{PLUGIN_NAME}] plugin dir: {HERE}")
+    print(f"[{PLUGIN_NAME}] agent zero root: {ROOT}")
+
+    check_files()
+    check_manifest()
+    check_syntax()
+    modules = check_imports()
+
+    # Must run before anything that touches the state module. A partial upgrade
+    # used to crash this script with the very AttributeError it should have
+    # explained, because check_state called state.resolve before the contract
+    # was verified. A diagnostic cannot be allowed to fail the way its subject
+    # fails.
+    contract_ok = check_module_contract(modules)
+    if not contract_ok:
+        print()
+        print(
+            f"[{PLUGIN_NAME}] stopping: the remaining checks call the state "
+            f"module directly and would fail the same way."
+        )
+        return finish(check_toggle())
+
+    check_state(modules)
+    check_api_contract(modules)
+    check_commands(modules)
+    check_webui(modules)
+    check_icon()
+    check_agents()
+    check_tool_claims()
+    check_prompts(modules)
+    check_claims()
+    check_unit_tests()
+    return finish(check_toggle())
 
 
 if __name__ == "__main__":

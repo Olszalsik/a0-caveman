@@ -37,6 +37,7 @@ from typing import Any
 
 from helpers.extension import Extension
 
+from usr.plugins.caveman.helpers import compat
 from usr.plugins.caveman.helpers import plugins_config as plugin_cfg
 from usr.plugins.caveman.helpers import state as caveman_state
 
@@ -59,6 +60,13 @@ class CavemanObserve(Extension):
         if not agent or not isinstance(result_data, dict):
             return
 
+        # See helpers/compat.py: a stale state module must not raise out of an
+        # extension point. Losing one observation is acceptable; killing the
+        # turn is not.
+        state = compat.state_api(caveman_state, agent)
+        if state is None:
+            return
+
         llm_result = result_data.get("llm_result")
         if llm_result is None:
             return
@@ -69,8 +77,8 @@ class CavemanObserve(Extension):
 
         config = plugin_cfg.get_config()
         chat_id = _chat_id(agent)
-        resolved = caveman_state.resolve(chat_id, config)
+        resolved = state.resolve(chat_id, config)
         if not resolved["enabled"]:
             return
 
-        caveman_state.record_turn(chat_id, resolved["level"], len(text))
+        state.record_turn(chat_id, resolved["level"], len(text))

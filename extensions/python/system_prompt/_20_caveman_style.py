@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from helpers.extension import Extension
 
+from usr.plugins.caveman.helpers import compat
 from usr.plugins.caveman.helpers import plugins_config as plugin_cfg
 from usr.plugins.caveman.helpers import prompts as caveman_prompts
 from usr.plugins.caveman.helpers import state as caveman_state
@@ -51,8 +52,15 @@ class CavemanStyle(Extension):
         if system_prompt is None:
             system_prompt = []
 
+        # A stale helpers/state.py used to raise AttributeError here, which
+        # propagated out of get_system_prompt and killed the agent turn. See
+        # helpers/compat.py.
+        state = compat.state_api(caveman_state, self.agent)
+        if state is None:
+            return
+
         config = plugin_cfg.get_config()
-        resolved = caveman_state.resolve(_chat_id_from(self.agent), config)
+        resolved = state.resolve(_chat_id_from(self.agent), config)
         if not resolved["enabled"]:
             return
 

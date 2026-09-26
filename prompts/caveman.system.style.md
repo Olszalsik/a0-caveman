@@ -9,7 +9,7 @@
  https://github.com/juliusbrussee/caveman/blob/main/skills/caveman/SKILL.md
 -->
 
-<style name="caveman" active="true" version="caveman-port/0.5.0">
+<style name="caveman" active="true" version="caveman-port/0.5.1">
 
 # Caveman Style
 
