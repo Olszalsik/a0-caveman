@@ -1,17 +1,62 @@
-# Caveman plugin for Agent Zero
+# Caveman + Headroom — Lean Context (Agent Zero plugin)
 
-Squeezes the assistant's own wording into ultra-short form while keeping full
-technical accuracy. Prompt-based: it changes how the model writes, not what it
-knows.
+Two independent features in one plugin:
 
-Derived from [Julius Brussee's caveman plugin][upstream] and adapted to Agent
-Zero's plugin conventions. MIT licensed.
+- **Caveman** squeezes the assistant's own wording into ultra-short form while
+  keeping full technical accuracy. Prompt-based: it changes how the model
+  writes, not what it knows.
+- **Headroom compression** shrinks eligible *input* — tool outputs, logs and
+  long history — before it reaches the model, and keeps the original in a
+  local reversible cache (CCR) so nothing is really lost.
+
+They have separate switches. Compression is **off by default**, so installing
+this plugin does not change what reaches your model until you turn it on.
+
+Caveman is derived from [Julius Brussee's caveman plugin][upstream] and adapted
+to Agent Zero's plugin conventions. The compression half was ported from the
+standalone `headroom_compress` plugin, which continues to exist and develop
+separately. MIT licensed.
 
 [upstream]: https://github.com/juliusbrussee/caveman
 
 ---
 
-## What it does
+## If you also run the standalone `headroom_compress` plugin
+
+The two plugins overlap: both compress tool outputs and history on the same
+framework hook points. Running both at once means every eligible message is
+transformed twice, two CCR caches hold separate copies of the same originals,
+and the two dashboards report numbers that do not add up. Nothing crashes,
+which is what makes it easy to miss.
+
+This plugin **detects** that situation and warns you. It will never toggle,
+disable or edit the other plugin for you — one plugin silently changing
+another's state would leave you unable to tell which switch did what. Turn the
+standalone plugin off in the Plugins UI, or leave this plugin's compression
+off. Either is fine; running both is not.
+
+**Importing your old settings.** Open *Settings → Developer → Caveman →
+Headroom compression*. If the standalone plugin is installed, a *Preview
+import* button appears:
+
+- Preview reads only. It reports the source configs at each scope, the values
+  it would import, the keys it will **not** touch because you already set them
+  here, the per-project/per-agent scopes you have to set yourself, and the
+  backup path it would use.
+- Apply requires an explicit confirmation, writes a timestamped backup next to
+  this plugin's `config.json`, and fills in only the keys that are *absent*.
+  It never overwrites a value set here, never drops a key it does not
+  recognise, and never modifies the standalone plugin's config, CCR cache or
+  statistics.
+
+**Rolling back.** Disable this plugin in the Plugins UI and re-enable
+`headroom_compress`. Nothing else is needed: this plugin never wrote into the
+standalone plugin's config, cache or statistics, and your per-chat Caveman
+levels are untouched either way.
+
+---
+
+## What Caveman does
 
 Injects a system-prompt fragment that tells the model to answer in tight
 caveman-speak: drop articles, filler, pleasantries, hedging. Code, commands,

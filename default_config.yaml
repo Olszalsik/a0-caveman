@@ -18,3 +18,43 @@ sanitize_responses: false  # delete banned filler phrases from the model's own
                        # output at ultra and wenyan-* levels. Off by default:
                        # it is phrase deletion, not rewriting, so an opener
                        # can leave a fragment behind.
+
+# Optional Headroom input/context compression. Independently toggleable and
+# OFF by default, preserving Caveman's existing behavior.
+headroom:
+  enabled: false
+  # Report-only mode: compute compression economics but return text untouched
+  # and persist nothing (no CCR write). Enforced in compressor.compress_text.
+  dry_run: false
+  mode: safe
+  strategy: auto
+  level: balanced
+  model_hint: gpt-4o
+  auto_compress_tool_outputs_min_tokens: 200
+  auto_compress_history: true
+  auto_compress_history_min_tokens: 4000
+  ccr_enabled: true
+  ccr_backend: sqlite
+  ccr_path: ""
+  ccr_ttl_days: 7
+  ccr_max_bytes: 268435456
+  stats_enabled: true
+  stats_path: ""
+  stats_retention_days: 30   # drop stats rows older than this. 0 = keep all.
+  stats_max_rows: 50000      # keep at most this many rows. 0 = unbounded.
+  expose_compress_tool: true
+  never_compress_system_prompts: true
+  protect_reads: true
+  protect_code: true
+  clear_old_tool_results: true
+  clear_keep_recent: 3
+  clear_min_tokens: 300
+  clear_exempt_tools: []
+  verbose: true
+  proxy:
+    auto_start: false
+    host: 127.0.0.1
+    port: 8787
+    mode: token
+    binary: /opt/venv-a0/bin/headroom
+    env: {}

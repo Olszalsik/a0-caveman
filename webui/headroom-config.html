@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Headroom Context Compression - Settings</title>
+  <script type="module" src="/plugins/caveman/webui/headroom-store.js"></script>
+  <style>
+    .headroom-section {
+      padding: 8px 4px 16px 4px;
+    }
+    .headroom-section h3 {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      opacity: 0.7;
+    }
+    .headroom-grid {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      gap: 10px 16px;
+      align-items: center;
+    }
+    .headroom-grid label {
+      font-size: 13px;
+      opacity: 0.85;
+    }
+    .headroom-grid input[type="text"],
+    .headroom-grid input[type="number"],
+    .headroom-grid select {
+      width: 100%;
+      max-width: 320px;
+      padding: 4px 6px;
+      background: var(--color-surface, #1f1f23);
+      color: var(--color-text, #eee);
+      border: 1px solid var(--color-border, #333);
+      border-radius: 4px;
+    }
+    .headroom-help {
+      font-size: 11px;
+      opacity: 0.6;
+      margin-top: 2px;
+    }
+    .headroom-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+    .headroom-actions button {
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: 1px solid var(--color-border, #333);
+      background: var(--color-accent, #2a5adf);
+      color: #fff;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .headroom-actions button.secondary {
+      background: transparent;
+      color: var(--color-text, #eee);
+    }
+    .headroom-actions button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .headroom-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--color-surface, #1f1f23);
+      border: 1px solid var(--color-border, #333);
+      font-size: 11px;
+      opacity: 0.85;
+    }
+    .headroom-pill.on { color: #7ed957; }
+    .headroom-pill.off { color: #e26d6d; }
+    .headroom-banner {
+      font-size: 12px;
+      padding: 8px 10px;
+      border-radius: 4px;
+      background: rgba(255, 200, 80, 0.1);
+      border: 1px solid rgba(255, 200, 80, 0.3);
+      margin: 8px 0 12px 0;
+    }
+  </style>
+</head>
+<body>
+  <template x-if="$store.headroomStore">
+    <div
+        x-data="{ get config() { return $store.headroomStore.config || { headroom: {} } } }"
+        x-init="$store.headroomStore.onOpen()"
+        x-destroy="$store.headroomStore.cleanup()"
+        class="headroot-host"
+      >
+        <div class="headroom-section">
+          <h3>Status</h3>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span class="headroom-pill" :class="$store.headroomStore.toggleClass" x-text="$store.headroomStore.toggleLabel"></span>
+            <span class="headroom-pill" x-text="'scope: ' + ($store.headroomStore.scope || 'global')"></span>
+            <span class="headroom-pill" x-text="'mode: ' + (config.headroom.mode || 'safe') + ' | strategy: ' + (config.headroom.strategy || 'auto')"></span>
+            <span class="headroom-pill" x-show="$store.headroomStore.headroomVersion" x-text="'headroom-ai: ' + $store.headroomStore.headroomVersion"></span>
+            <span class="headroom-pill" x-text="'ccr: ' + (config.headroom.ccr_enabled ? 'on' : 'off')"></span>
+          </div>
+          <div class="headroom-banner" x-show="!$store.headroomStore.headroomAvailable" x-cloak>
+            <strong>Headroom adapter unavailable.</strong>
+            Normal mode needs the pinned headroom-ai package. Safe mode still performs
+            local whitespace normalization. Click <em>Install / repair headroom-ai</em>
+            to prepare the normal-mode adapter.
+          </div>
+        </div>
+
+        <div class="headroom-section">
+          <h3>Master switch</h3>
+          <div class="headroom-grid">
+            <label for="hr-enabled">Enable plugin</label>
+            <div>
+              <input type="checkbox" id="hr-enabled" x-model="config.headroom.enabled" />
+              <div class="headroom-help">
+                When off the plugin is a true no-op: the LLM tools still register
+                but the compressor returns the input unchanged. The global Agent
+                Zero toggle (Plugins UI) is a separate, stronger switch.
+              </div>
+            </div>
+
+            <label for="hr-mode">Mode</label>
+            <div>
+              <select id="hr-mode" x-model="config.headroom.mode">
+                <option value="safe">safe (local deterministic; no headroom-ai import)</option>
+                <option value="normal">normal (Headroom content router / SmartCrusher)</option>
+              </select>
+              <div class="headroom-help">Safe mode is local whitespace normalization and may change whitespace. Normal mode uses Headroom transforms and falls back safely if they fail.</div>
+            </div>
+
+            <label for="hr-strategy">Strategy</label>
+            <div>
+              <select id="hr-strategy" x-model="config.headroom.strategy">
+                <option value="auto">auto (route by content type)</option>
+                <option value="smart_crusher">smart_crusher (universal JSON)</option>
+              </select>
+              <div class="headroom-help">Only auto and smart_crusher are currently connected to this plugin's per-message adapter.</div>
+            </div>
+
+            <span></span>
+            <div class="headroom-help">Legacy `level` and `model_hint` settings are preserved for compatibility; current per-content transforms do not use them.</div>
+          </div>
+        </div>
+
+        <div class="headroom-section">
+          <h3>Automatic compression</h3>
+          <div class="headroom-grid">
+            <label for="hr-auto-tool">Auto-compress tool outputs</label>
+            <div>
+              <input type="checkbox" id="hr-auto-tool"
+                :checked="config.headroom.auto_compress_tool_outputs_min_tokens > 0"
+                @change="config.headroom.auto_compress_tool_outputs_min_tokens = $event.target.checked ? 200 : 0" />
+              <div class="headroom-help">
+                Compress tool outputs that exceed the threshold below. The LLM
+                still gets the compressed content + a CCR key it can call
+                <code>headroom_retrieve</code> on for the original.
+              </div>
+            </div>
+
+            <label for="hr-thresh">Min tokens to compress</label>
+            <div>
+              <input type="number" id="hr-thresh" min="0" step="50"
+                x-model.number="config.headroom.auto_compress_tool_outputs_min_tokens" />
+              <div class="headroom-help">0 disables auto-compression; default 200 tokens.</div>
+            </div>
+
+            <label for="hr-auto-hist">Auto-compress long history</label>
+            <div>
+              <input type="checkbox" id="hr-auto-hist" x-model="config.headroom.auto_compress_history" />
+            </div>
+
+            <label for="hr-protect-code">Protect detected source code</label>
+            <div>
+              <input type="checkbox" id="hr-protect-code" x-model="config.headroom.protect_code" />
+              <div class="headroom-help">Skip lossy transforms for valid Python and recognizable source snippets. Enabled by default because the upstream detector can misclassify repetitive code as plain text.</div>
+            </div>
+
+            <label for="hr-hist-thresh">History threshold</label>
+            <div>
+              <input type="number" id="hr-hist-thresh" min="0" step="500"
+                x-model.number="config.headroom.auto_compress_history_min_tokens" />
+            </div>
+
+            <label for="hr-expose-tool">Expose compress_text tool</label>
+            <div>
+              <input type="checkbox" id="hr-expose-tool" x-model="config.headroom.expose_compress_tool" />
+              <div class="headroom-help">
+                Even with auto-compression off, the LLM can call
+                <code>compress_text</code> on demand to shrink a specific string.
+                When this is off the tool refuses and explains why, since Agent
+                Zero registers plugin tools by directory and cannot withdraw one
+                at runtime. <code>toggle_info</code> and <code>estimate</code>
+                stay available either way.
+              </div>
+            </div>
+
+            <label for="hr-verbose">Verbose logging</label>
+            <div>
+              <input type="checkbox" id="hr-verbose" x-model="config.headroom.verbose" />
+            </div>
+          </div>
+        </div>
+
+        <div class="headroom-section">
+          <h3>CCR (reversible) cache</h3>
+          <div class="headroom-grid">
+            <label for="hr-ccr-on">Enable CCR</label>
+            <div>
+              <input type="checkbox" id="hr-ccr-on" x-model="config.headroom.ccr_enabled" />
+              <div class="headroom-help">
+                Store full originals locally so the LLM can pull them back on
+                demand. Disable for a fully lossy / lighter footprint.
+              </div>
+            </div>
+
+            <label for="hr-ccr-back">Backend</label>
+            <div>
+              <select id="hr-ccr-back" x-model="config.headroom.ccr_backend">
+                <option value="sqlite">sqlite (recommended, in plugin dir)</option>
+                <option value="in_memory">in_memory (lost on restart)</option>
+                <option value="redis">redis (requires redis-py)</option>
+              </select>
+            </div>
+
+            <label for="hr-ccr-path">Custom CCR path</label>
+            <div>
+              <input type="text" id="hr-ccr-path" x-model="config.headroom.ccr_path"
+                placeholder="(default: <plugin>/ccr/ccr.db)" />
+            </div>
+
+            <label for="hr-ccr-ttl">TTL (days)</label>
+            <div>
+              <input type="number" id="hr-ccr-ttl" min="0" step="1"
+                x-model.number="config.headroom.ccr_ttl_days" />
+              <div class="headroom-help">0 = keep forever.</div>
+            </div>
+
+            <label for="hr-ccr-cap">Maximum cache payload (bytes)</label>
+            <div>
+              <input type="number" id="hr-ccr-cap" min="0" step="16777216"
+                x-model.number="config.headroom.ccr_max_bytes" />
+              <div class="headroom-help">Defaults to 268435456 (256 MiB). Oldest entries are evicted first; 0 = unlimited.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="headroom-section">
+          <h3>Stats</h3>
+          <div class="headroom-grid">
+            <label for="hr-stats-on">Record stats</label>
+            <div>
+              <input type="checkbox" id="hr-stats-on" x-model="config.headroom.stats_enabled" />
+            </div>
+            <label for="hr-stats-path">Custom stats path</label>
+            <div>
+              <input type="text" id="hr-stats-path" x-model="config.headroom.stats_path"
+                placeholder="(default: <plugin>/stats/stats.db)" />
+            </div>
+          </div>
+        </div>
+
+        <div class="headroom-section">
+          <h3>Proxy mode <span style="font-weight:normal;opacity:0.6;">(transparent compression for every LLM call)</span></h3>
+          <div class="headroom-grid" x-init="$store.headroomStore.refreshProxyStatus()">
+            <label>Status</label>
+            <div>
+              <span x-show="!$store.headroomStore.proxyStatus">Checking ...</span>
+              <span x-show="$store.headroomStore.proxyStatus && $store.headroomStore.proxyStatus.running"
+                    style="color:#6dd06d;font-weight:600;">
+                Running on http://127.0.0.1:<span x-text="$store.headroomStore.proxyStatus?.port || 8787"></span>
+                (pid <span x-text="$store.headroomStore.proxyStatus?.pid"></span>)
+              </span>
+              <span x-show="$store.headroomStore.proxyStatus && !$store.headroomStore.proxyStatus.running"
+                    style="color:#d08a6d;">
+                Stopped
+                <span x-show="$store.headroomStore.proxyStatus?.error"
+                      x-text="' - ' + $store.headroomStore.proxyStatus.error"></span>
+              </span>
+            </div>
+
+            <label for="hr-proxy-auto">Auto-start on plugin load</label>
+            <div>
+              <input type="checkbox" id="hr-proxy-auto"
+                x-model="config.headroom.proxy.auto_start" />
+              <div class="headroom-help">
+                When ON, the proxy starts automatically whenever the plugin is
+                enabled. Off by default - start it manually with the button below.
+              </div>
+            </div>
+
+            <label for="hr-proxy-host">Bind host</label>
+            <div>
+              <input type="text" id="hr-proxy-host" x-model="config.headroom.proxy.host" />
+              <div class="headroom-help">Localhost only - do not expose externally.</div>
+            </div>
+
+            <label for="hr-proxy-port">Bind port</label>
+            <div>
+              <input type="number" id="hr-proxy-port" min="1" max="65535"
+                x-model.number="config.headroom.proxy.port" />
+            </div>
+
+            <label for="hr-proxy-mode">Optimization mode</label>
+            <div>
+              <select id="hr-proxy-mode" x-model="config.headroom.proxy.mode">
+                <option value="token">token - max savings, rewrites prior turns</option>
+                <option value="cache">cache - max prefix-cache hit rate</option>
+              </select>
+            </div>
+
+            <label>Usage</label>
+            <div class="headroom-help" style="line-height:1.5;">
+              After the proxy is running, open <strong>Settings &rarr; Model</strong>
+              and set the active provider's <code>api_base</code> to
+              <code>http://127.0.0.1:<span x-text="$store.headroomStore.proxyStatus?.port || config.headroom.proxy.port || 8787"></span></code>.
+              The headroom binary lives at
+              <code x-text="config.headroom.proxy.binary || '/opt/venv-a0/bin/headroom'"></code>.
+            </div>
+          </div>
+        </div>
+
+        <div class="headroom-section" x-show="$store.headroomStore.coexistence?.present" x-cloak>
+          <h3>Standalone headroom_compress plugin</h3>
+          <div class="headroom-help" style="line-height:1.5; margin-bottom: 8px;">
+            The standalone <code>headroom_compress</code> plugin is installed
+            (state: <span x-text="$store.headroomStore.coexistence?.toggle"></span>).
+            <span x-show="$store.headroomStore.coexistence?.overlaps" style="color:#e26d6d;">
+              It is enabled and this plugin's compression is on too, so both are
+              transforming the same messages and keeping separate originals.
+              Turn one of them off.
+            </span>
+            <span x-show="$store.headroomStore.coexistence && !$store.headroomStore.coexistence?.overlaps">
+              Only one of the two is active, so nothing is being compressed twice.
+            </span>
+            This plugin never changes the other plugin's state for you.
+          </div>
+        </div>
+
+        <div class="headroom-section" x-show="$store.headroomStore.coexistence?.present" x-cloak>
+          <h3>Import settings from the standalone plugin</h3>
+          <div class="headroom-help" style="line-height:1.5; margin-bottom: 8px;">
+            Preview is read-only. Applying only fills in keys this plugin does not
+            already have, never overwrites a value you set here, keeps keys it does
+            not recognise, and writes a timestamped backup next to this plugin's
+            <code>config.json</code> first. The standalone plugin's config, CCR
+            cache and stats are never modified.
+          </div>
+          <div class="headroom-actions">
+            <button type="button" class="secondary"
+              @click="$store.headroomStore.previewMigration()"
+              :disabled="$store.headroomStore.migrationBusy">
+              Preview import
+            </button>
+            <button type="button"
+              @click="$store.headroomStore.applyMigration()"
+              :disabled="$store.headroomStore.migrationBusy || !$store.headroomStore.migrationPlan?.to_import || !Object.keys($store.headroomStore.migrationPlan?.to_import || {}).length">
+              Apply import
+            </button>
+          </div>
+          <template x-if="$store.headroomStore.migrationPlan?.standalone?.present === false">
+            <div class="headroom-help">The standalone plugin is not installed, so there is nothing to import.</div>
+          </template>
+          <template x-if="$store.headroomStore.migrationPlan">
+            <div class="headroom-help" style="line-height:1.5; margin-top: 8px;">
+              <div>Would import:
+                <code x-text="JSON.stringify($store.headroomStore.migrationPlan.to_import)"></code>
+              </div>
+              <div x-show="($store.headroomStore.migrationPlan.conflicts || []).length"
+                   style="color:#d0a86d;">
+                Kept as-is (already set here):
+                <span x-text="($store.headroomStore.migrationPlan.conflicts || []).map(c => c.key).join(', ')"></span>
+              </div>
+              <div x-show="($store.headroomStore.migrationPlan.manual || []).length">
+                Not imported automatically (per-project / per-agent scopes):
+                <span x-text="($store.headroomStore.migrationPlan.manual || []).map(m => m.scope).join(', ')"></span>
+                &mdash; set those in the settings modal for that scope.
+              </div>
+              <div x-show="($store.headroomStore.migrationPlan.warnings || []).length"
+                   style="color:#e26d6d;"
+                   x-text="($store.headroomStore.migrationPlan.warnings || []).join('; ')"></div>
+            </div>
+          </template>
+        </div>
+
+        <div class="headroom-actions">
+          <span class="headroom-pill" x-show="$store.headroomStore.configDirty" x-cloak
+                style="color:#d0a86d;">unsaved changes</span>
+          <button type="button"
+            @click="$store.headroomStore.saveConfig()"
+            :disabled="$store.headroomStore.savingConfig || !$store.headroomStore.configDirty">
+            <span x-show="!$store.headroomStore.savingConfig">Save settings</span>
+            <span x-show="$store.headroomStore.savingConfig" x-cloak>Saving ...</span>
+          </button>
+        </div>
+
+        <div class="headroom-actions">
+          <button type="button" @click="$store.headroomStore.installPackage()"
+            :disabled="$store.headroomStore.busy">
+            <span x-show="!$store.headroomStore.busy">Install / upgrade headroom-ai</span>
+            <span x-show="$store.headroomStore.busy" x-cloak>Working ...</span>
+          </button>
+          <button type="button" class="secondary"
+            @click="$store.headroomStore.openDashboard()">
+            Open stats dashboard
+          </button>
+          <button type="button" class="secondary"
+            @click="$store.headroomStore.testCompress()">
+            Test compress (sample text)
+          </button>
+          <button type="button" class="primary"
+            @click="$store.headroomStore.startProxy()"
+            :disabled="$store.headroomStore.proxyBusy || ($store.headroomStore.proxyStatus && $store.headroomStore.proxyStatus.running)">
+            <span x-show="!$store.headroomStore.proxyBusy">Start proxy</span>
+            <span x-show="$store.headroomStore.proxyBusy" x-cloak>Working ...</span>
+          </button>
+          <button type="button" class="secondary"
+            @click="$store.headroomStore.stopProxy()"
+            :disabled="$store.headroomStore.proxyBusy || !($store.headroomStore.proxyStatus && $store.headroomStore.proxyStatus.running)">
+            Stop proxy
+          </button>
+          <button type="button" class="secondary"
+            @click="$store.headroomStore.restartProxy()"
+            :disabled="$store.headroomStore.proxyBusy">
+            Restart proxy
+          </button>
+        </div>
+      </div>
+    </template>
+</body>
+</html>

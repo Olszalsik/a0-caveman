@@ -43,13 +43,25 @@ def _valid_levels() -> tuple:
         return ("lite", "full", "ultra", "wenyan-lite", "wenyan-full", "wenyan-ultra")
 
 
-def _resolved(chat_id: str) -> dict:
+def _resolved(chat_id: str, agent=None) -> dict:
     """Current level + enabled for a chat, defaults from the plugin config.
 
     Falls back to the configured defaults when `helpers/state.py` is stale, so
     the WebUI shows a usable state instead of a 500. See helpers/compat.py.
+
+    Scope honesty (finding 10, remediation 2026-09-28): the previous docstring
+    claimed "ApiHandler exposes it as `self.agent`" -- it does not. The
+    framework constructs ApiHandler classes with only `app`/`thread_lock`, so
+    `agent` is always None here and the WebUI resolves the GLOBAL plugin
+    config, while the model-facing extension points (which do have an agent)
+    resolve per-project/per-agent scoped configs. The two can disagree for a
+    chat that carries its own overrides. This is a framework limitation, not
+    something the handler can paper over; it is documented here and in
+    REMEDIATION.md rather than pretended away. The `agent` parameter is kept
+    so the resolution helper stays correct for callers that DO have an agent.
     """
-    config = plugin_cfg.get_config()
+    config_mod = compat.config_api(plugin_cfg, agent)
+    config = config_mod.get_config(agent=agent) if config_mod is not None else {}
     state = compat.state_api(caveman_state)
     if state is None:
         level = config.get("level", "full")
@@ -67,6 +79,9 @@ def _error(message: str, action: str) -> dict:
 class CavemanState(ApiHandler):
     async def process(self, input_data, request):
         data = _payload(input_data)
+        # ApiHandler has no agent (framework limitation, see _resolved): this
+        # resolves to the global config scope.
+        _agent = getattr(self, "agent", None)
         action = data.get("action") or "get"
         chat_id = str(data.get("chat_id") or "")
 
@@ -89,11 +104,12 @@ class CavemanState(ApiHandler):
                     "action": "list",
                     "error": "helpers/state.py is an older version; replace the plugin",
                 }
+            _config = compat.config_api(plugin_cfg, _agent)
             return {
                 "ok": True,
                 "action": "list",
                 "chats": state.get_all_chats(),
-                "config": plugin_cfg.get_config(),
+                "config": _config.get_config(agent=_agent) if _config is not None else {},
                 "state_path": state.state_path(),
             }
 
@@ -105,7 +121,7 @@ class CavemanState(ApiHandler):
                 "ok": True,
                 "action": "get",
                 "chat_id": chat_id,
-                **_resolved(chat_id),
+                **_resolved(chat_id, _agent),
             }
 
         if action == "set":
@@ -155,7 +171,7 @@ class CavemanState(ApiHandler):
                 "ok": ok,
                 "action": action,
                 "chat_id": chat_id,
-                **_resolved(chat_id),
+                **_resolved(chat_id, _agent),
             }
 
         if action == "set_level":
@@ -173,7 +189,7 @@ class CavemanState(ApiHandler):
                 "ok": ok,
                 "action": action,
                 "chat_id": chat_id,
-                **_resolved(chat_id),
+                **_resolved(chat_id, _agent),
             }
 
         if action == "set_enabled":
@@ -185,7 +201,7 @@ class CavemanState(ApiHandler):
                 "ok": ok,
                 "action": action,
                 "chat_id": chat_id,
-                **_resolved(chat_id),
+                **_resolved(chat_id, _agent),
             }
 
         if action == "clear":
@@ -194,7 +210,7 @@ class CavemanState(ApiHandler):
                 "ok": ok,
                 "action": action,
                 "chat_id": chat_id,
-                **_resolved(chat_id),
+                **_resolved(chat_id, _agent),
             }
 
         return _error(f"unknown action: {action!r}", action)

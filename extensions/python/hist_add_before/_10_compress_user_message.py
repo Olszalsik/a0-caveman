@@ -1,0 +1,140 @@
+"""hist_add_before hook — compress large user-message content in v2.2.
+
+New in Agent Zero v2.2: `Agent.hist_add_message` now calls:
+
+    extension.call_extensions_sync("hist_add_before", self, content_data=..., ai=ai)
+
+before the message is appended to history. This is a wider net than
+hist_add_tool_result — it catches ALL messages (user, AI, tool, system),
+but the framework only calls hist_add_before when @extensible annotations
+fire, so we register at the named point.
+
+For the headroom plugin we only compress here when:
+  * the message is a USER message (ai=False), AND
+  * its text content is large enough to benefit (>auto_compress_history_min_tokens), AND
+  * the plugin is enabled and CCR is enabled
+
+We deliberately do NOT touch:
+  * system messages (ai is True only for AI responses, so we skip those)
+  * the very first user message (idx==0; the initial task)
+
+The hook mutates content_data["content"] in place — the framework then
+passes the rewritten content into history.add_message.
+"""
+
+from __future__ import annotations
+
+import sys
+from typing import Any
+
+from helpers.extension import Extension
+
+from usr.plugins.caveman.helpers.headroom import compressor
+from usr.plugins.caveman.helpers.headroom import config as _config
+
+
+def _print(msg: str) -> None:
+    sys.stderr.write(f"[caveman/headroom] {msg}\n")
+    sys.stderr.flush()
+
+
+def _extract_text(content: Any) -> str | None:
+    """Finding 3 (remediation 2026-09-28): `hist_add_user_message` stores the
+    user text under the key `user_message`, not `content`/`message`/`text` --
+    this hook never matched and user-message compression was inert. Extraction
+    goes through the shared envelope-aware helper."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        from usr.plugins.caveman.helpers import text_extract
+
+        text = text_extract.text_from_content(content)
+        return text or None
+    return None
+
+
+def _set_text(content: Any, new_text: str) -> Any:
+    if isinstance(content, str):
+        return new_text
+    if isinstance(content, dict):
+        for key in ("user_message", "content", "message", "text"):
+            if key in content and isinstance(content[key], str):
+                content[key] = new_text
+                return content
+    return content
+
+
+class CompressUserMessageBefore(Extension):
+    """Pre-add hook: compress large user-message content in v2.2."""
+
+    def execute(self, content_data: dict | None = None, ai: bool = False, **kwargs) -> None:
+        if content_data is None:
+            return
+        if ai:
+            # Only compress user-side messages here. AI responses are handled by
+            # the message_loop_prompts_before history hook.
+            return
+
+        cfg = _config.get_config(agent=self.agent)
+        if not cfg.get("enabled", False):
+            return
+        if not cfg.get("auto_compress_history", False):
+            return
+
+        min_tokens = int(cfg.get("auto_compress_history_min_tokens", 4000) or 0)
+        if min_tokens <= 0:
+            return
+
+        content = content_data.get("content")
+        if content is None:
+            return
+
+        # Keep the documented guarantee: never touch the very first user
+        # message (the initial task). When it's being added the history is
+        # still empty -- this hook fires BEFORE the message is appended.
+        # (v0.4.2 audit: the docstring claimed this guard but the code
+        # never had it; a >4000-token initial task would have been
+        # compressed at add time.)
+        # v0.4.3 fix: History has no `.messages` attribute (that lives on
+        # Topic) -- the v0.4.2 guard read None every time and disabled the
+        # whole hook. Use History.all_messages().
+        try:
+            history = getattr(self.agent, "history", None)
+            messages = history.all_messages() if history is not None else None
+            if not messages:
+                return
+        except Exception:
+            pass
+
+        text = _extract_text(content)
+        if not text:
+            return
+
+        cheap_tokens = compressor._cheap_token_count(text)
+        if cheap_tokens < min_tokens:
+            return
+
+        source = "hist_add_before:user"
+        result = compressor.compress_text(
+            text,
+            agent=self.agent,
+            source=source,
+        )
+
+        if result.get("compressed") and result.get("saved_tokens", 0) > 0:
+            new_text = result["text"]
+            if result.get("ccr_key"):
+                ccr_key = result["ccr_key"]
+                new_text = (
+                    f"[compressed by headroom - original saved as CCR key {ccr_key}; "
+                    f"call headroom_retrieve with action=get key={ccr_key} to restore]\n"
+                    f"{new_text}"
+                )
+            content_data["content"] = _set_text(content, new_text)
+
+            if cfg.get("verbose", True):
+                _print(
+                    f"hist_add_before: compressed user message "
+                    f"{result['original_tokens']} -> {result['output_tokens']} tokens "
+                    f"({result['saved_tokens']} saved)"
+                )

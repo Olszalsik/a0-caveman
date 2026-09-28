@@ -59,14 +59,22 @@ class CavemanStyle(Extension):
         if state is None:
             return
 
-        config = plugin_cfg.get_config()
+        # The same guard for helpers/plugins_config.py. This is the call that
+        # produced `TypeError: get_config() got an unexpected keyword argument
+        # 'agent'` on a partial upgrade, and it was unguarded while the state
+        # read above was not.
+        config_mod = compat.config_api(plugin_cfg, self.agent)
+        if config_mod is None:
+            return
+
+        config = config_mod.get_config(agent=self.agent)
         resolved = state.resolve(_chat_id_from(self.agent), config)
         if not resolved["enabled"]:
             return
 
         block = caveman_prompts.build_system_prompt(
             resolved["level"],
-            auto_clarity=plugin_cfg.get_bool("auto_clarity"),
+            auto_clarity=config_mod.get_bool("auto_clarity", agent=self.agent),
         )
         if not block:
             return

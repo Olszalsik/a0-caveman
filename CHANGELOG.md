@@ -6,6 +6,201 @@ to the style rules and the level set.
 
 [upstream]: https://github.com/juliusbrussee/caveman
 
+## 0.5.3 (2026-09-28)
+
+Remediation pass documented in `REMEDIATION.md` (follow-up to `AUDIT.md`).
+Headline: three shipped features were dead in production because they read
+user messages against a contract Agent Zero does not have, and the tests that
+were supposed to catch it used fakes that matched the wrong contract.
+
+### Fixed
+
+- **Slash commands were dead in production.** `hist_add_user_message` stores
+  the user message as the dict envelope from `fw.user_message.md`
+  (`{"user_message": ...}`), and `Message.output_text()` prefixes `"user: "`
+  and JSON-dumps dict content — so `/caveman ultra` arrived as
+  `user: {"user_message":"/caveman ultra"}` and the anchored command patterns
+  never matched. Extraction now goes through the new
+  `helpers/text_extract.py`, shared by every reader of user-visible message
+  text.
+- **Auto-clarity detection was dead in production.** `_05_auto_clarity` probed
+  the envelope keys `content`/`message`/`text`; the real key is
+  `user_message`, so the destructive-command skip flag was never set. The
+  AUDIT F1 ordering fix (peek in `_07`, consume in `_10`) had been protecting
+  a flag that could not exist. Detection now uses the shared extractor and
+  prefers the current turn's message from `loop_data`.
+- **User-message compression was inert.** `_10_compress_history` and the
+  `hist_add_before` hook used the same wrong key list; both now read and
+  write through the envelope-aware helper (including the `user_message` key
+  on rewrite).
+- **The clarity flag store lost 100% of updates under concurrent chats**
+  (measured: 266 corrupted + 134 lost of 400 racing writes — unlocked
+  read-modify-write with a plain `write_text`). Writes are now serialised by
+  an in-process lock plus the cross-process lock file `per_chat.py` uses, and
+  land atomically via temp file + `os.replace`; a corrupt store fails open
+  instead of crashing a turn.
+- **The tool-output threshold silently killed history compression.**
+  `compressor.compress_text` read `auto_compress_tool_outputs_min_tokens` for
+  every source, so with the tool feature off (threshold 0) a 20k-token
+  history message skipped with reason `min_tokens=0`. The threshold now
+  applies to `tool:` sources only; history/user hooks apply their own
+  `auto_compress_history_min_tokens`; direct no-source calls keep a fallback
+  minimum.
+- **`dry_run` was a phantom setting**: read into every result, reported by
+  the tools, never enforced, in no defaults. It is now enforced in
+  `compress_text` (original text returned, nothing persisted, economics
+  reported via `would_be_text`/`would_save_tokens`) and added to `DEFAULTS`
+  and `default_config.yaml`.
+- **Tool-call turns corrupted the observation and validation paths.**
+  `llm_result.response` falls back to the function-call envelope JSON on a
+  tool-only turn: `_60_caveman_observe` counted that JSON as model output and
+  `_50_caveman_validate` could have rewritten JSON inside it. Both now use
+  the shared prose extractor (a bare `response`-tool turn yields the answer
+  text from the tool arguments); the validator never rewrites an envelope.
+- **`_strip_filler` had no code-block protection**: the whitespace collapse
+  ran over fenced code and destroyed indentation. Fenced blocks (including an
+  unclosed fence at EOF) are now excluded, and the collapse never touches
+  line-leading indentation.
+- **`migration._scoped_sources` crashed in its own fallback path**:
+  `assets` was bound only inside the `try`, so an enumeration failure
+  (`helpers.plugins` imports PIL, unavailable outside the runtime) hit
+  `UnboundLocalError` and the migration API returned 500 instead of the
+  degraded scope list.
+- **Migration backups could overwrite each other** on a same-second apply;
+  the stamp now has microsecond precision plus an exists-loop.
+- **`api/caveman_stats.py` had zero compat guards** — a partial upgrade
+  surfaced as 500s from every stats action; it now degrades with an honest
+  error like the other handlers.
+- **`_30_caveman_command` was the only extension point writing state without
+  the `compat.state_api()` guard**; a stale `helpers/state.py` would have
+  raised out of the hook and killed the turn. It now skips like the rest.
+- **`api/caveman_state.py` claimed `ApiHandler` exposes `self.agent`** — it
+  does not (framework limitation: handlers are built with only
+  `app`/`thread_lock`). The docstring now states the real consequence: the
+  WebUI resolves the global config while model-facing extension points
+  resolve per-project/per-agent scopes, and the two can disagree.
+- **The dropdown refreshed on every DOM mutation** — a `MutationObserver` on
+  `document.body` ran `build()` + a POST `refresh()` on every mutation batch
+  (typing in the composer was enough to flood the backend). It now acts only
+  when the control is actually missing, debounced; and the `select()` error
+  path re-reads state inline instead of calling `refresh()`, which
+  early-returns while `pending` is true and therefore never re-read anything.
+- **Version desync**: `install.py` expected 0.5.1 while `plugin.yaml` said
+  0.5.2. Everything is synced at 0.5.3.
+
+### Added
+
+- `helpers/text_extract.py` — the single envelope-aware extractor for
+  user-visible message text and tool-call prose.
+- 11 new tests in `tests/test_caveman.py` pinning the real framework message
+  contract (label + JSON envelope — the anti-fake-drift tests), clarity-store
+  concurrency and corrupt-file tolerance, threshold decoupling, `dry_run`
+  enforcement, envelope-safe validation/observation, and code-block-safe
+  filler stripping. Suite: 73/73. `tests/test_headroom_integration.py`: 78/78.
+
+## Unreleased (folded into 0.5.3)
+
+### Fixed
+
+- **A partial upgrade could stop the agent outright.** An install whose
+  `helpers/plugins_config.py` was older than its extension files raised
+  `TypeError: get_config() got an unexpected keyword argument 'agent'` from
+  `get_system_prompt`, which propagated through `prepare_prompt` into
+  `monologue` — where `agent.handle_exception` re-raises, so the turn died and
+  the UI reported the agent as stopped. `get_config` gained its `agent`
+  parameter in 0.5.0; the deployed module had not.
+  `helpers/compat.py` now guards the config module exactly as it already
+  guarded the state module: `config_api()` returns `None` after warning once
+  with the partial-upgrade hint, and every caller skips itself instead of
+  raising. `helpers/headroom/config.py` guards once on behalf of its ten
+  callers and falls back to the documented defaults, which means "off".
+  `missing_config_api()` reports a function whose signature is too narrow to
+  accept `agent=` as well as a missing symbol — the two are the same failure,
+  and a stale `get_config` looks current on disk.
+- **`helpers/headroom/config.py` no longer raises at import** when the parent
+  config module has no `headroom` section, which previously broke every hook
+  that imported it rather than only the compression ones.
+
+### Operational
+
+- **Editing `helpers/compat.py` (or any `helpers/` module) needs a `run_ui`
+  restart, and `python execute.py` cannot detect this.** Extension modules are
+  re-read from disk on every call, but the `helpers/` modules they import stay
+  cached in `sys.modules` for the life of the process. A live server therefore
+  runs new caller code against an old cached `compat`, and reports
+  `module 'usr.plugins.caveman.helpers.compat' has no attribute 'config_api'`
+  for a function that is present on disk. `execute.py` runs in a fresh
+  interpreter, so it passes and hides the problem. After changing a `helpers/`
+  module, restart the UI and confirm the fix inside the live process.
+
+### Changed
+
+- `execute.py`'s `check_module_contract` now asserts the config guard is
+  present in every caller and that the loaded `plugins_config` provides the API
+  they call, so a partial upgrade is diagnosed instead of discovered mid-turn.
+- 8 new tests cover the stale config module, including the exact traceback, and
+  assert a healthy config still reaches `get_config` with the agent forwarded.
+
+## 0.5.2
+
+The plugin becomes **Caveman + Headroom — Lean Context**: Caveman's
+response-style controls plus the compression half of the standalone
+`headroom_compress` plugin, with separate switches. Compression is **off by
+default**, so upgrading does not change what reaches your model until you
+enable it. `ROADMAP_UNIFIED.md` is the working analysis.
+
+### Added
+
+- **Headroom input compression** under `helpers/headroom/`, `api/headroom_*`,
+  `tools/`, and the `hist_add_before` / `hist_add_tool_result` /
+  `message_loop_prompts_before` hooks: safe and normal modes, content routing,
+  code and file-read protections, old-tool-result clearing, CCR storage and
+  retrieval, per-chat overrides, statistics and a dashboard. Settings live
+  under a `headroom` key so they cannot collide with Caveman's own.
+- **Coexistence detection** (`helpers/headroom/coexistence.py`) plus a welcome
+  banner, for when the standalone `headroom_compress` plugin is also enabled.
+  Read-only by design: it warns, and never toggles the other plugin.
+- **Settings migration** (`helpers/headroom/migration.py`,
+  `api/headroom_migration.py`) with a read-only preview and an explicit
+  `confirm` for apply. It fills in only missing keys, preserves unknown keys,
+  backs up `config.json` first, and never modifies the source plugin, its CCR
+  cache or its statistics.
+- **Settings/dashboard modals** for compression, reachable from the Caveman
+  settings page, and a pointer to the standalone-plugin import.
+- **44 cross-feature tests** (`tests/test_headroom_integration.py`) covering
+  compression safety, CCR recoverability, the clear-only-if-stored rule,
+  coexistence detection, the migration contract, and registration uniqueness.
+- **Health-check coverage for the whole combined surface**: a scan for
+  accidental imports of the standalone plugin, `default_config.yaml` /
+  `DEFAULTS` parity for the headroom section, one-class-per-file and
+  unique-banner-id checks, and a live migration preview.
+- `per_project_config` / `per_agent_config` are now `true`, so scoped configs
+  resolve for both halves.
+
+### Fixed
+
+- **The response sanitizer and the tool-description shrinker appeared to be
+  permanently switched off.** `get_plugin_config` is called with `agent=`, and
+  readers that did not forward one raised `TypeError`, which
+  `plugins_config.get_config()` swallowed into a silent fallback to defaults.
+  Every Caveman call site is now agent-scoped, and a test guards them.
+- **Three unit tests were failing on arrival** because the test stub's
+  `get_plugin_config` did not accept `agent=`. Fixed in the stub, with a note
+  explaining why the narrow signature is dangerous.
+- **The settings API read the global config** rather than the caller's scope,
+  so the topbar dropdown could disagree with the prompt the chat received.
+
+### Changed
+
+- The standalone plugin's `caveman_bridge` output-savings estimator was **not**
+  ported. It multiplied observed output length by a per-level constant and
+  reported the product as savings — the retracted claim in a different hat,
+  and a double count against Caveman's own observation store. Output
+  observations now have exactly one owner, `helpers/state.py`.
+- Log prefixes are `[caveman/headroom…]` instead of `[headroom_compress…]`.
+- Health-check messages name the failing suite and report the standalone
+  plugin's state.
+
 ## 0.5.1
 
 Fixes a reported production crash caused by a partial upgrade, and makes the

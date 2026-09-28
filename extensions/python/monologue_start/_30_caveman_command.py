@@ -14,13 +14,17 @@ Recognised (case-insensitive):
   talk like caveman | use caveman | caveman on
   normal mode | stop caveman | caveman off | disable caveman
 
-The user message is read through `history.Message.output_text()`, which is the
-framework's own accessor for the recursive `MessageContent` union. An earlier
-revision probed `loop_data.last_user_message` / `.last_message` / `.messages`
-and gated every branch on `isinstance(obj, str)`. None of those attributes
-exist on `LoopData`, and `loop_data.user_message` is a `history.Message`, not
-a `str`, so the probe always returned "" and every command below was
-unreachable.
+User-message extraction goes through `helpers/text_extract.py`. Two contract
+facts it encodes (remediation 2026-09-28, finding 1): `hist_add_user_message`
+stores the message as the dict envelope `{"user_message": ...}` from
+`fw.user_message.md`, and `output_text()` prefixes `"user: "` and JSON-dumps
+dict content, so the raw accessor returns
+`user: {"user_message":"/caveman ultra"}` — anchored patterns never matched
+and every command below was dead in production. An earlier revision probed
+`loop_data.last_user_message` / `.last_message` / `.messages` and gated every
+branch on `isinstance(obj, str)`; none of those attributes exist on
+`LoopData`, and `loop_data.user_message` is a `history.Message`, not a `str`,
+so that probe always returned "" too.
 
 The user message is deliberately left untouched. Replacing it would corrupt
 state that other extensions read for the same turn (memory and skill recall
@@ -33,6 +37,7 @@ from typing import Any, Optional
 
 from helpers.extension import Extension
 
+from usr.plugins.caveman.helpers import compat
 from usr.plugins.caveman.helpers import state as caveman_state
 
 
@@ -93,25 +98,14 @@ def _get_latest_user_text(loop_data: Any) -> str:
     """Extract the user-visible text of the current turn's user message."""
     if loop_data is None:
         return ""
-
     message = getattr(loop_data, "user_message", None)
-    if message is not None:
-        # Canonical accessor; unwraps the recursive MessageContent union.
-        for attr in ("output_text",):
-            getter = getattr(message, attr, None)
-            if callable(getter):
-                try:
-                    text = getter()
-                except Exception:
-                    text = None
-                if isinstance(text, str) and text.strip():
-                    return text
-        # Fallback for a bare string content or a stub message object.
-        content = getattr(message, "content", None)
-        if isinstance(content, str) and content.strip():
-            return content
+    if message is None:
+        return ""
+    # Canonical extraction: handles the dict envelope, the "user: " label
+    # prefix and string stubs in one place (helpers/text_extract.py).
+    from usr.plugins.caveman.helpers import text_extract
 
-    return ""
+    return text_extract.user_text_from_message(message)
 
 
 class CavemanCommand(Extension):
@@ -136,14 +130,22 @@ class CavemanCommand(Extension):
         if not chat_id:
             return
 
+        # Finding 11 (remediation 2026-09-28): this was the only extension
+        # point writing state without the compat guard — a partial upgrade
+        # (old helpers/state.py missing the called symbols) would raise out
+        # of the hook and kill the turn instead of skipping it.
+        state_api = compat.state_api(caveman_state, self.agent)
+        if state_api is None:
+            return
+
         if action == "set_level":
             # One atomic write: set the level and turn the mode on together, so
             # no reader can observe a half-applied command.
-            ok = caveman_state.set_state(chat_id, level=value, enabled=True)
+            ok = state_api.set_state(chat_id, level=value, enabled=True)
         elif action == "off":
-            ok = caveman_state.set_state(chat_id, enabled=False)
+            ok = state_api.set_state(chat_id, enabled=False)
         elif action in ("on", "on_default"):
-            ok = caveman_state.set_state(chat_id, enabled=True)
+            ok = state_api.set_state(chat_id, enabled=True)
         else:
             return
 

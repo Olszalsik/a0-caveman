@@ -1,0 +1,5 @@
+# This is the newest adapter version validated with the plugin at the time of
+# this pin. Avoid resolving Headroom's newer LiteLLM minimum over Agent Zero's
+# pinned LiteLLM; update only after compatibility and fidelity checks.
+--no-deps
+headroom-ai==0.38.0

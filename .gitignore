@@ -26,3 +26,7 @@ __pycache__/
 # --- OS clutter -------------------------------------------------------------
 .DS_Store
 Thumbs.db
+# --- Runtime state stores (created live by the plugin) ----------------------
+cache/
+ccr/
+stats/

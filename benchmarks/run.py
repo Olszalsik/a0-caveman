@@ -230,6 +230,27 @@ def describe(values: list[float]) -> dict:
     }
 
 
+def complete_prompt_ids(
+    outputs: dict[str, dict[str, list[str]]],
+    arms: tuple[str, ...] | list[str],
+    expected_repeats: int,
+) -> list[str]:
+    """Return prompts with the same full sample count in every arm."""
+    if not arms or expected_repeats < 1:
+        return []
+    candidates = set.intersection(
+        *(set(outputs.get(arm, {})) for arm in arms)
+    )
+    return sorted(
+        pid
+        for pid in candidates
+        if all(
+            len(outputs.get(arm, {}).get(pid, [])) == expected_repeats
+            for arm in arms
+        )
+    )
+
+
 def pct(x: float) -> str:
     """Format a reduction ratio. Positive means shorter than the reference."""
     sign = "-" if x < 0 else "+"
@@ -252,6 +273,13 @@ async def main_async() -> int:
         help="check fixtures and prompt fragments only; no model call",
     )
     args = parser.parse_args()
+
+    if args.repeats < 1:
+        print("ERROR: --repeats must be at least 1", file=sys.stderr)
+        return 1
+    if args.max_tokens < 1:
+        print("ERROR: --max-tokens must be at least 1", file=sys.stderr)
+        return 1
 
     if not PROMPTS_FILE.is_file():
         print(f"ERROR: missing {PROMPTS_FILE}", file=sys.stderr)
@@ -340,10 +368,8 @@ async def main_async() -> int:
         }
 
     token_map = {arm: arm_tokens(arm) for arm in arms}
-    common = (
-        sorted(set.intersection(*(set(m) for m in token_map.values())))
-        if token_map
-        else []
+    common = complete_prompt_ids(
+        outputs, list(arms), expected_repeats=args.repeats
     )
     if not common:
         print()

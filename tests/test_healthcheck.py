@@ -54,6 +54,11 @@ MUTATED = {
         "system_prompt",
         "_20_caveman_style.py",
     ),
+    "plugins_config": os.path.join(PLUGIN, "helpers", "plugins_config.py"),
+    "coexistence": os.path.join(
+        PLUGIN, "helpers", "headroom", "coexistence.py"
+    ),
+    "default_yaml": os.path.join(PLUGIN, "default_config.yaml"),
 }
 
 
@@ -151,9 +156,11 @@ def add_fast_poll(text):
 
 def reinstate_claim(text):
     # The exact retracted headline, asserted as fact.
+    original = "squeezes the assistant's own wording"
+    assert original in text, "README no longer has the expected headline"
     return text.replace(
-        "Squeezes the assistant's own wording",
-        "Cuts 65% of output tokens (measured) by squeezing the assistant's own wording",
+        original,
+        "cuts 65% of output tokens (measured) by squeezing the assistant's own wording",
         1,
     )
 
@@ -197,6 +204,31 @@ def remove_compat_guard(text):
     return text.replace(original, "state = caveman_state  # guard removed", 1)
 
 
+def remove_config_guard(text):
+    # The same bypass for the config module, which is guarded independently
+    # because a partial upgrade reaches it as easily as the state module.
+    original = "config_mod = compat.config_api(plugin_cfg, self.agent)"
+    assert original in text, "style extension no longer has the config guard"
+    return text.replace(original, "config_mod = plugin_cfg  # guard removed", 1)
+
+
+def narrow_get_config(text):
+    # Simulate the second reported partial upgrade: plugins_config.py from
+    # v0.4.0, whose get_config predates the `agent` parameter. Every symbol the
+    # shipped modules call is still present and the file still compiles, so only
+    # a signature-aware contract check can catch this.
+    original = "def get_config(agent: Any = None) -> dict[str, Any]:"
+    assert original in text, "plugins_config.py no longer has the expected get_config"
+    text = text.replace(
+        original, "def get_config() -> dict[str, Any]:", 1
+    )
+    return text.replace(
+        "plugins_helper.get_plugin_config(PLUGIN_NAME, agent=agent)",
+        "plugins_helper.get_plugin_config(PLUGIN_NAME)",
+        1,
+    )
+
+
 def add_estimator_back(text):
     # Reintroduce the fabricated ratio into the observation store.
     return text.replace(
@@ -211,6 +243,47 @@ def add_ratio_table(text):
     anchor = "| **caveman-commit** |"
     assert anchor in text, "caveman-help table no longer has the expected row"
     return text.replace(anchor, "- `full`: ~65%\n" + anchor, 1)
+
+
+def add_standalone_from_import(text):
+    # The canonical from-import form the old line-based scan missed: the line
+    # carries no "usr.plugins.headroom_compress" literal. Wrapped in a function
+    # so importing the mutated module does not execute it (the AST scan still
+    # sees the node).
+    assert "def resolve(" in text, "state.py shape changed"
+    return text + (
+        "\n\ndef _healthcheck_probe_import():\n"
+        "    from usr.plugins import headroom_compress\n"
+    )
+
+
+def collide_banner_constant(text):
+    # The coexistence banner's id is not a literal in the banner file; it is
+    # BANNER_ID in helpers/headroom/coexistence.py. Point the constant at the
+    # literal id the other banner ships, now that helpers constants are
+    # resolved, and the collision must fail the uniqueness check.
+    original = 'BANNER_ID = "caveman_headroom_standalone_overlap"'
+    assert original in text, "coexistence helper no longer defines BANNER_ID"
+    return text.replace(original, 'BANNER_ID = "caveman_headroom_setup_hint"', 1)
+
+
+def add_unread_top_level_key(text):
+    # A caveman (not headroom) setting shipped in the YAML that DEFAULTS does
+    # not list: only the top-level parity comparison can catch it.
+    assert "enabled: false" in text, "default_config.yaml shape changed"
+    return text.replace("enabled: false", "enabled: false\nrisk_floor_pct: 25", 1)
+
+
+def reinstate_claim_percent_word(text):
+    # Same retracted headline with the unit spelled out - the variant the
+    # %-only patterns let through.
+    original = "squeezes the assistant's own wording"
+    assert original in text, "README no longer has the expected headline"
+    return text.replace(
+        original,
+        "cuts tokens by 65 percent (measured) by squeezing the assistant's own wording",
+        1,
+    )
 
 
 CASES = [
@@ -303,6 +376,42 @@ CASES = [
         "style_extension",
         remove_compat_guard,
         "without compat.state_api",
+    ),
+    Case(
+        "an extension drops the config guard",
+        "style_extension",
+        remove_config_guard,
+        "without compat.config_api",
+    ),
+    Case(
+        "plugins_config.py loses its agent parameter (partial upgrade)",
+        "plugins_config",
+        narrow_get_config,
+        "does not provide the API",
+    ),
+    Case(
+        "combined plugin from-imports the standalone package",
+        "state",
+        add_standalone_from_import,
+        "imports the standalone plugin's package",
+    ),
+    Case(
+        "banner id constant collides with a shipped literal id",
+        "coexistence",
+        collide_banner_constant,
+        "duplicate banner ids",
+    ),
+    Case(
+        "YAML ships a caveman key DEFAULTS lacks",
+        "default_yaml",
+        add_unread_top_level_key,
+        "top-level settings disagree",
+    ),
+    Case(
+        "savings claim returns with the unit spelled out",
+        "readme",
+        reinstate_claim_percent_word,
+        "unverified savings claim",
     ),
 ]
 

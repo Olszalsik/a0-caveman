@@ -48,9 +48,13 @@ from helpers.extension import Extension
 from usr.plugins.caveman.helpers import compat
 from usr.plugins.caveman.helpers import plugins_config as plugin_cfg
 from usr.plugins.caveman.helpers import state as caveman_state
-
+from usr.plugins.caveman.helpers import text_extract
 
 PLUGIN_NAME = "caveman"
+
+# Runs of spaces/tabs NOT at line start. Runs at line start can be markdown
+# indented-code indentation, which collapsing would silently destroy.
+_WS_RUN_RE = re.compile(r"(?<=\S)[ \t]{2,}(?=\S)")
 
 BANNED_FILLER = (
     "i'd be happy to",
@@ -109,15 +113,47 @@ def _is_final_answer_turn(llm_result) -> bool:
     return all(getattr(call, "name", "") == FINAL_RESPONSE_TOOL for call in calls)
 
 
+# Fenced code blocks, including an unclosed fence at EOF so the tail is
+# protected too. Non-greedy: stops at the first matching closing fence.
+_FENCED_CODE_RE = re.compile(r"```[\s\S]*?(?:```|\Z)|~~~[\s\S]*?(?:~~~|\Z)")
+
+
+def _split_code_segments(text: str) -> list[tuple[str, bool]]:
+    """Split text into (segment, is_code) pairs, keeping order and content."""
+    segments: list[tuple[str, bool]] = []
+    pos = 0
+    for match in _FENCED_CODE_RE.finditer(text):
+        if match.start() > pos:
+            segments.append((text[pos:match.start()], False))
+        segments.append((match.group(0), True))
+        pos = match.end()
+    if pos < len(text):
+        segments.append((text[pos:], False))
+    return segments
+
+
 def _strip_filler(text: str) -> tuple[str, int]:
-    out, count = BANNED_RE.subn("", text)
-    if count:
-        out = re.sub(r"[ \t]{2,}", " ", out)
-        out = re.sub(r"[ \t]+([,.;:!?])", r"\1", out)
-        # Removing a leading interjection can leave the line starting with
-        # punctuation ("! Removed the file.").
-        out = re.sub(r"^[\s,.;:!?]+", "", out)
-    return out, count
+    # Finding 14 (remediation 2026-09-28): the whitespace collapse ran over
+    # the whole text with no code-block protection, silently mangling fenced
+    # and indented code whenever a filler phrase appeared anywhere in the
+    # answer. Phrase removal and cleanup now apply outside fences only, and
+    # the collapse never touches line-leading indentation.
+    parts: list[str] = []
+    total = 0
+    for segment, is_code in _split_code_segments(text):
+        if is_code:
+            parts.append(segment)
+            continue
+        out, count = BANNED_RE.subn("", segment)
+        if count:
+            out = _WS_RUN_RE.sub(" ", out)
+            out = re.sub(r"[ \t]+([,.;:!?])", r"\1", out)
+            # Removing a leading interjection can leave the line starting with
+            # punctuation ("! Removed the file.").
+            out = re.sub(r"^[\s,.;:!?]+", "", out)
+        total += count
+        parts.append(out)
+    return "".join(parts), total
 
 
 def _warn(agent, level: str, phrases: list[str], stripped: bool) -> None:
@@ -154,23 +190,38 @@ class CavemanValidate(Extension):
         if llm_result is None:
             return
 
-        text = getattr(llm_result, "response", "")
-        if not isinstance(text, str) or not text.strip():
+        raw_response = getattr(llm_result, "response", "")
+        if not isinstance(raw_response, str) or not raw_response.strip():
+            return
+        # Finding 13 (remediation 2026-09-28): on a tool-only turn
+        # `llm_result.response` is the function-call envelope JSON (the
+        # framework's fallback in helpers/llm_result.py), not prose the user
+        # read -- matching filler against it was meaningless and rewriting it
+        # would have replaced the envelope with mangled JSON. Use the shared
+        # prose extractor: on a bare `response`-tool turn it returns the tool
+        # call's text argument (the actual answer), otherwise the response.
+        prose = text_extract.prose_from_llm_result(llm_result)
+        if not prose.strip():
             return
 
-        config = plugin_cfg.get_config()
+        # Agent-scoped: per_project_config / per_agent_config are true for this
+        # plugin, so the gate must resolve for THIS agent, not globally.
+        config_mod = compat.config_api(plugin_cfg, agent)
+        if config_mod is None:
+            return
+        config = config_mod.get_config(agent=agent)
         chat_id = _chat_id(self.agent)
         if not state.resolve(chat_id, config)["enabled"]:
             return
 
-        matches = BANNED_RE.findall(text)
+        matches = BANNED_RE.findall(prose)
         if not matches:
             return
 
         level = state.get_level(chat_id, config.get("level", state.DEFAULT_LEVEL))
 
         should_strip = (
-            plugin_cfg.get_bool("sanitize_responses")
+            config_mod.get_bool("sanitize_responses", agent=agent)
             and _is_strip_level(level)
             and _is_final_answer_turn(llm_result)
         )
@@ -178,7 +229,14 @@ class CavemanValidate(Extension):
             _warn(agent, level, matches, stripped=False)
             return
 
-        new_text, _ = _strip_filler(text)
+        if prose != raw_response:
+            # The display text is the function-call envelope JSON, not prose:
+            # never rewrite it (a stripped fragment would be stored as the
+            # response field). Report the detection so it stays visible.
+            _warn(agent, level, matches, stripped=False)
+            return
+
+        new_text, _ = _strip_filler(prose)
         if new_text.strip():
             llm_result.response = new_text
             _warn(agent, level, matches, stripped=True)

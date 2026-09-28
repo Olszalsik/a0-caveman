@@ -26,7 +26,7 @@ from pathlib import Path
 
 
 PLUGIN_NAME = "caveman"
-EXPECTED_VERSION = "0.5.1"
+EXPECTED_VERSION = "0.5.3"
 
 
 def main() -> int:

@@ -40,6 +40,7 @@ from helpers.extension import Extension
 from usr.plugins.caveman.helpers import compat
 from usr.plugins.caveman.helpers import plugins_config as plugin_cfg
 from usr.plugins.caveman.helpers import state as caveman_state
+from usr.plugins.caveman.helpers import text_extract
 
 
 PLUGIN_NAME = "caveman"
@@ -71,11 +72,22 @@ class CavemanObserve(Extension):
         if llm_result is None:
             return
 
-        text = getattr(llm_result, "response", "")
-        if not isinstance(text, str) or not text.strip():
+        raw_response = getattr(llm_result, "response", "")
+        if not isinstance(raw_response, str) or not raw_response.strip():
+            return
+        # Finding 13 (remediation 2026-09-28): on a tool-only turn the
+        # framework stores the function-call envelope JSON into `.response`,
+        # so the per-turn char stats measured tool-call JSON instead of model
+        # output and inflated the numbers. On a bare `response`-tool turn the
+        # shared extractor returns the answer text from the tool arguments.
+        text = text_extract.prose_from_llm_result(llm_result)
+        if not text.strip():
             return
 
-        config = plugin_cfg.get_config()
+        config_mod = compat.config_api(plugin_cfg, agent)
+        if config_mod is None:
+            return
+        config = config_mod.get_config(agent=agent)
         chat_id = _chat_id(agent)
         resolved = state.resolve(chat_id, config)
         if not resolved["enabled"]:

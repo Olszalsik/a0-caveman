@@ -1,7 +1,13 @@
 # Caveman Plugin - Roadmap
 
-**Current state:** v0.5.0. 45 unit tests, 13 health-check self-tests, health
-check PASSED. Agent Zero v2.2 compatible.
+**Current state:** v0.5.2 — the plugin is now **Caveman + Headroom**, the
+combined product described in `ROADMAP_UNIFIED.md`. The health check and 97
+tests pass (53 Caveman + 44 cross-feature), and 13 health-check self-tests
+prove the check can still fail. Agent Zero v2.2 compatible.
+
+The integration work is tracked in `ROADMAP_UNIFIED.md`; this file keeps the
+Caveman-only concerns (live runtime validation, the real-model A/B, community
+release preparation).
 
 This roadmap was written during v0.4.0, when the plugin had no tests and three
 of its features could not execute. Those items are marked done rather than
@@ -11,7 +17,13 @@ re-attempted.
 
 ---
 
-## Done in v0.5.0
+## Done in v0.5.1
+
+- Keep each state update and its mode-transition log row inside the same
+  process lock. Without that, concurrent mode changes could appear in the log
+  in a different order from the state writes.
+- Compare only prompts with the full repeat count in every benchmark arm;
+  partial provider failures must not make arm sample sizes incomparable.
 
 Correctness. Three features shipped non-functional and now work:
 
@@ -81,12 +93,13 @@ python benchmarks/run.py --model gpt-4o-mini --repeats 3 --output results.json
 Commit the raw file alongside any number quoted from it. Upstream's bar is
 committed raw pairs plus separate review, not a headline percentage.
 
-### 3. Community publishing
+### 3. Community listing maintenance
 
-`plugin-hub/index.yaml` and `thumbnail.png` are ready and the public repo
-exists. A `CHANGELOG.md` covering 0.1.0 through 0.5.0 and a `CONTRIBUTING.md`
-are still missing, and the description should be re-read now that it no longer
-claims a percentage.
+`plugin-hub/index.yaml`, `thumbnail.png`, `CHANGELOG.md`, and `CONTRIBUTING.md`
+are present. The community listing still advertises v0.4.0 and includes the
+retracted 65% claim, so refresh the listing metadata and README when preparing
+the next public release. Keep the listing aligned with the local README's
+honest-numbers policy.
 
 ### 4. Polish
 

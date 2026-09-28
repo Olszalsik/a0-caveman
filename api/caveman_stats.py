@@ -32,6 +32,7 @@ each other's writes.
 
 from helpers.api import ApiHandler  # type: ignore
 
+from usr.plugins.caveman.helpers import compat
 from usr.plugins.caveman.helpers import state as caveman_state
 
 
@@ -44,6 +45,18 @@ def _payload(input_data) -> dict:
 
 class CavemanStats(ApiHandler):
     async def process(self, input_data, request):
+        # Finding 12 (remediation 2026-09-28): this handler called
+        # `caveman_state` directly with no compat guard, so a partial upgrade
+        # (stale helpers/state.py missing the called symbols) surfaced as HTTP
+        # 500s from every stats action instead of an honest degraded reply.
+        state = compat.state_api(caveman_state, None)
+        if state is None:
+            return {
+                "ok": False,
+                "error": "caveman state helpers unavailable (stale install?); "
+                "see the container log for the warning",
+            }
+
         data = _payload(input_data)
         action = data.get("action") or "get"
         chat_id = str(data.get("chat_id") or "")
@@ -52,15 +65,15 @@ class CavemanStats(ApiHandler):
             return {
                 "ok": True,
                 "action": "list",
-                "chats": caveman_state.all_stats(),
-                "stats_path": caveman_state.stats_path(),
+                "chats": state.all_stats(),
+                "stats_path": state.stats_path(),
             }
 
         if action == "summary":
             return {
                 "ok": True,
                 "action": "summary",
-                "summary": caveman_state.summary(),
+                "summary": state.summary(),
             }
 
         if action == "history":
@@ -74,8 +87,8 @@ class CavemanStats(ApiHandler):
                 "ok": True,
                 "action": "history",
                 "chat_id": chat_id,
-                "transitions": caveman_state.mode_history(chat_id),
-                "mode_log_path": caveman_state.mode_log_path(),
+                "transitions": state.mode_history(chat_id),
+                "mode_log_path": state.mode_log_path(),
             }
 
         if not chat_id:
@@ -90,12 +103,12 @@ class CavemanStats(ApiHandler):
                 "ok": True,
                 "action": "get",
                 "chat_id": chat_id,
-                **caveman_state.get_stats(chat_id),
+                **state.get_stats(chat_id),
             }
 
         if action == "reset":
             return {
-                "ok": caveman_state.reset_stats(chat_id),
+                "ok": state.reset_stats(chat_id),
                 "action": "reset",
                 "chat_id": chat_id,
             }

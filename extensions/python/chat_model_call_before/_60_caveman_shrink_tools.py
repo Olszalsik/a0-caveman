@@ -88,7 +88,10 @@ class CavemanShrinkTools(Extension):
         agent = self.agent
         if not agent or not isinstance(call_data, dict):
             return
-        if not plugin_cfg.get_bool("shrink_tools"):
+        config_mod = compat.config_api(plugin_cfg, agent)
+        if config_mod is None:
+            return
+        if not config_mod.get_bool("shrink_tools", agent=agent):
             return
 
         # Not decoration: the plugin records per-chat state, so the level has to
@@ -101,7 +104,7 @@ class CavemanShrinkTools(Extension):
         if state is None:
             return
 
-        resolved = state.resolve(_chat_id(agent), plugin_cfg.get_config())
+        resolved = state.resolve(_chat_id(agent), config_mod.get_config(agent=agent))
         if not resolved["enabled"]:
             return
 

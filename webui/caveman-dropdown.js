@@ -169,9 +169,19 @@ async function select(value) {
     state.label && (state.label.textContent = `Caveman: ${displayLevel()}`);
   } catch (error) {
     console.error("[caveman] set level failed", error);
-    // Do not claim success. Re-read the real state and show it.
-    state.label && (state.label.textContent = "Caveman: error");
-    await refresh();
+    // Do not claim success. Re-read the real state and show it. This is an
+    // inline GET, not refresh(): refresh() early-returns while state.pending
+    // is true (finding 15, remediation 2026-09-28), so the old error path
+    // silently never re-read anything and left the stale label on screen.
+    try {
+      const result = await callApi({ action: "get", chat_id: chatId });
+      state.level = result.level;
+      state.enabled = result.enabled;
+      state.label && (state.label.textContent = `Caveman: ${displayLevel()}`);
+    } catch (readError) {
+      console.error("[caveman] state re-read failed", readError);
+      state.label && (state.label.textContent = "Caveman: error");
+    }
   } finally {
     state.pending = false;
     renderMenu();
@@ -281,8 +291,24 @@ function build() {
 
 function watch() {
   if (state.observer || typeof MutationObserver === "undefined") return;
+  // Finding 15 (remediation 2026-09-28): the observer used to run `build()`
+  // (a full querySelector pass) and, on success, a POST `refresh()` on EVERY
+  // mutation batch anywhere in the document — typing in the composer or a
+  // streaming response was enough to flood the backend with state GETs.
+  // Now: act only when the control is actually missing or detached, and
+  // debounce bursts of mutations into one check.
+  let timer = null;
+  const controlMissing = () => {
+    const btn = document.getElementById("caveman-btn");
+    return !btn || !btn.isConnected;
+  };
   state.observer = new MutationObserver(() => {
-    if (build()) refresh();
+    if (!controlMissing()) return;
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      if (controlMissing() && build()) refresh();
+    }, 500);
   });
   state.observer.observe(document.body, { childList: true, subtree: true });
 }

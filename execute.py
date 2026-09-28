@@ -25,6 +25,22 @@ validator attached to an extension point that carries no response text.
 
 This version treats any failure as a failure, and additionally exercises the
 state layer, the API action contract, and command classification for real.
+
+Hardening round (v0.5.2 remediation)
+------------------------------------
+Checks that could still pass vacuously were closed: the standalone-import scan
+is AST-based (it now catches `from usr.plugins import headroom_compress`,
+parenthesised multi-line imports, dynamically built importlib calls, and it
+covers hooks.py, install.py, headroom_setup.py, skills/ and benchmarks/, not
+just helpers/api/extensions/tools); the migration and coexistence report runs
+against the REAL framework helpers when they import and its output says which
+mode ran, because stub data must never be reported as a fact about the install;
+the bare-fetch guard is per call site; the claim guard also scans .html/.js
+assets and the banner extensions' user-visible strings; banner ids defined as
+helpers constants are resolved; config parity covers the Caveman top-level keys
+as well as the headroom section; intensity levels are read from the shipped
+markers, not only through available_levels()'s VALID_LEVELS filter; and the
+Headroom settings page's bindings and asset references are validated.
 """
 
 import importlib.util
@@ -36,7 +52,7 @@ import sys
 import types
 
 PLUGIN_NAME = "caveman"
-EXPECTED_VERSION = "0.5.1"
+EXPECTED_VERSION = "0.5.3"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -101,7 +117,6 @@ _bootstrap_imports()
 REQUIRED_FILES = [
     "plugin.yaml",
     "default_config.yaml",
-    "config.json",
     "hooks.py",
     "LICENSE",
     "icon.svg",
@@ -128,6 +143,37 @@ REQUIRED_FILES = [
     "extensions/python/message_loop_result/_50_caveman_validate.py",
     "extensions/python/message_loop_result/_60_caveman_observe.py",
     "extensions/webui/page-head/caveman-injector.html",
+    # Headroom half of the combined plugin (roadmap P1/P2)
+    "headroom-requirements.txt",
+    "headroom_setup.py",
+    "helpers/headroom/config.py",
+    "helpers/headroom/compressor.py",
+    "helpers/headroom/ccr_cache.py",
+    "helpers/headroom/stats.py",
+    "helpers/headroom/per_chat.py",
+    "helpers/headroom/clarity.py",
+    "helpers/headroom/proxy_manager.py",
+    "helpers/headroom/coexistence.py",
+    "helpers/headroom/migration.py",
+    "api/headroom_config.py",
+    "api/headroom_execute.py",
+    "api/headroom_per_chat.py",
+    "api/headroom_proxy.py",
+    "api/headroom_stats.py",
+    "api/headroom_migration.py",
+    "extensions/python/banners/_10_headroom_compress.py",
+    "extensions/python/banners/_20_headroom_coexistence.py",
+    "extensions/python/hist_add_before/_10_compress_user_message.py",
+    "extensions/python/hist_add_tool_result/_10_compress_tool_output.py",
+    "extensions/python/message_loop_prompts_before/_05_auto_clarity.py",
+    "extensions/python/message_loop_prompts_before/_07_clear_old_tool_results.py",
+    "extensions/python/message_loop_prompts_before/_10_compress_history.py",
+    "tools/compress_text.py",
+    "tools/headroom_retrieve.py",
+    "webui/headroom-store.js",
+    "webui/headroom-config.html",
+    "webui/headroom-dashboard-store.js",
+    "webui/headroom-dashboard.html",
     "webui/caveman-dropdown.js",
     "webui/config.html",
     # sub-skills
@@ -140,6 +186,7 @@ REQUIRED_FILES = [
     # tests
     "tests/test_caveman.py",
     "tests/test_healthcheck.py",
+    "tests/test_headroom_integration.py",
     # cavecrew subagents
     "agents/cavecrew-investigator/agent.yaml",
     "agents/cavecrew-investigator/prompts/agent.system.main.specifics.md",
@@ -152,6 +199,12 @@ REQUIRED_FILES = [
     "benchmarks/prompts.json",
     "benchmarks/README.md",
 ]
+
+# config.json is gitignored and written on first save, so a fresh install or
+# clone legitimately lacks it; the runtime creates it on first save. Its
+# absence is a note, not a failure. Everything about its content is still
+# checked when it exists (dead keys in check_manifest).
+OPTIONAL_FILES = ("config.json",)
 
 # Actions the WebUI is allowed to send. Checked against the handler below.
 FRONTEND_ACTIONS = ("get", "set", "list")
@@ -180,6 +233,13 @@ def check_files() -> None:
             fail(f"missing file: {name}")
         return
     ok(f"all {len(REQUIRED_FILES)} required files present")
+
+    for name in OPTIONAL_FILES:
+        if not os.path.isfile(os.path.join(HERE, name)):
+            print(
+                f"[{PLUGIN_NAME}] note: {name} absent (created on first "
+                "save); documented defaults apply"
+            )
 
     # The manifest must not advertise extension points that no longer exist.
     stale = {
@@ -293,9 +353,19 @@ def _stub_framework():
     sys.modules.setdefault("helpers.files", files)
 
     # plugins_config imports helpers.plugins lazily; provide it if absent.
+    #
+    # The signature must accept `agent=`: a narrower one raises TypeError,
+    # plugins_config.get_config() swallows it, and every setting silently
+    # falls back to defaults. That is a real bug this stub once hid.
     if "helpers.plugins" not in sys.modules:
         plugins_mod = types.ModuleType("helpers.plugins")
-        plugins_mod.get_plugin_config = lambda name: None
+        plugins_mod.get_plugin_config = lambda name, agent=None, **kw: None
+        # The coexistence and migration checks need these to exist. Reporting
+        # "not installed" exercises the normal path; leaving them off would
+        # only prove the error path.
+        plugins_mod.find_plugin_dir = lambda name: None
+        plugins_mod.get_toggle_state = lambda name: "disabled"
+        plugins_mod.find_plugin_assets = lambda *a, **k: []
         sys.modules["helpers.plugins"] = plugins_mod
 
 
@@ -397,7 +467,11 @@ def check_state(modules: dict) -> None:
         expected_root = os.path.abspath(os.path.join(ROOT, "usr", "workdir"))
 
     path = state.state_path()
-    if not os.path.abspath(path).startswith(expected_root):
+    # os.sep-aware: a sibling directory sharing the prefix (.../workdir-evil)
+    # must not pass a raw startswith.
+    path_abs = os.path.abspath(path)
+    prefix = os.path.join(expected_root, "")
+    if path_abs != expected_root and not path_abs.startswith(prefix):
         fail(
             f"state path {path!r} is outside the Agent Zero workdir "
             f"{expected_root!r}"
@@ -620,6 +694,59 @@ def _strip_js_comments(source: str) -> str:
     return "\n".join(out)
 
 
+def _webui_sources():
+    """Yield (relative path, text) for every WebUI asset.
+
+    Covers webui/**.js|.html and the extension-injected page-head HTML, so the
+    Headroom settings page and its stores get the same scrutiny as the Caveman
+    dropdown. JS comments are stripped first so a route or claim quoted in a
+    comment cannot be mistaken for shipped code.
+    """
+    bases = (os.path.join(HERE, "webui"), os.path.join(HERE, "extensions", "webui"))
+    for base in bases:
+        for dirpath, _dirnames, filenames in os.walk(base):
+            if "__pycache__" in dirpath:
+                continue
+            for name in sorted(filenames):
+                if not name.endswith((".js", ".html")):
+                    continue
+                full = os.path.join(dirpath, name)
+                rel = os.path.relpath(full, HERE).replace(os.sep, "/")
+                with open(full, "r", encoding="utf-8") as handle:
+                    text = handle.read()
+                if name.endswith(".js"):
+                    text = _strip_js_comments(text)
+                yield rel, text
+
+
+def _bare_fetch_calls(js: str):
+    """(line, args) for every fetch( call that does not route through the
+    CSRF-aware helper.
+
+    Per call site, not per file: a file that migrates one endpoint to fetchApi
+    while leaving a bare fetch() on another passed the old file-level
+    "fetchApi exists anywhere" short-circuit.
+    """
+    offenders = []
+    for match in re.finditer(r"\bfetch\(", js):
+        depth = 0
+        end = None
+        for i in range(match.end() - 1, len(js)):
+            ch = js[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        args = js[match.end() : end if end is not None else match.end() + 120]
+        if "fetchApi" not in args:
+            line = js.count("\n", 0, match.start()) + 1
+            offenders.append((line, args[:48]))
+    return offenders
+
+
 def check_webui(modules: dict) -> None:
     api = modules.get("api_state")
     if api is None:
@@ -640,8 +767,12 @@ def check_webui(modules: dict) -> None:
     if unknown:
         fail(f"dropdown sends actions the API does not implement: {unknown}")
 
-    if re.search(r"(?<!fetchApi\()\bfetch\(", js) and "fetchApi" not in js:
-        fail("dropdown uses a bare fetch(); it must use fetchApi for the CSRF token")
+    bare = _bare_fetch_calls(js)
+    for line_no, args in bare:
+        fail(
+            f"dropdown line {line_no} uses a bare fetch({args!r}...); "
+            "it must use fetchApi, which attaches the CSRF token"
+        )
 
     for match in re.finditer(r"setInterval\((?:[^()]|\([^()]*\))*?,\s*(\d+)\s*\)", js):
         if int(match.group(1)) < 5000:
@@ -669,6 +800,44 @@ def check_webui(modules: dict) -> None:
         else:
             ok(f"config.html binds only real settings: {sorted(bound)}")
 
+    # The Headroom half ships its own settings page and stores. Its bindings
+    # must name real headroom settings, and every plugin asset it references
+    # must exist - the same frontend/backend contract config.html is held to,
+    # which previously shipped a binding nothing read.
+    headroom_defaults = {}
+    if plugins_config is not None:
+        section = plugins_config.DEFAULTS.get("headroom")
+        if isinstance(section, dict):
+            headroom_defaults = section
+    bad_bindings = []
+    missing_assets = []
+    for rel, text in _webui_sources():
+        for key_path in re.findall(
+            r"config\.headroom\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)", text
+        ):
+            node = headroom_defaults
+            for part in key_path.split("."):
+                if not isinstance(node, dict) or part not in node:
+                    bad_bindings.append(f"{rel}: config.headroom.{key_path}")
+                    break
+                node = node[part]
+        for match in re.finditer(
+            r"[\"'(]/plugins/caveman/([A-Za-z0-9_./?=&-]+)", text
+        ):
+            tail = re.split(r"[?&]", match.group(1))[0]
+            if not tail.endswith((".html", ".js", ".css", ".svg", ".png")):
+                continue  # API route, not an asset
+            if not os.path.isfile(os.path.join(HERE, *tail.split("/"))):
+                missing_assets.append(f"{rel}: /plugins/caveman/{tail}")
+    if bad_bindings:
+        for entry in sorted(set(bad_bindings)):
+            fail(f"WebUI binds a headroom setting no backend reads: {entry}")
+    elif headroom_defaults:
+        ok("headroom-config.html binds only real headroom settings")
+    if missing_assets:
+        for entry in missing_assets:
+            fail(f"WebUI references a plugin asset that does not exist: {entry}")
+
     if not failures:
         ok("WebUI actions, CSRF, polling and settings bindings all agree")
 
@@ -682,7 +851,9 @@ def check_icon() -> None:
     path = os.path.join(HERE, "icon.svg")
     with open(path, "r", encoding="utf-8") as handle:
         body = handle.read()
-    if "<svg" not in body:
+    # A real element, not any occurrence of the substring: "<svg" inside a
+    # comment or an attribute value is not an icon.
+    if not re.search(r"<svg[\s>]", body):
         fail("icon.svg has no <svg> element")
     else:
         ok(f"icon.svg present ({len(body)} bytes)")
@@ -756,13 +927,16 @@ def check_tool_claims() -> None:
 # "Cuts output tokens by roughly 65%", which is exactly the phrasing a store
 # reviewer would read.
 _REDUCE_WORD = r"(?:cut|cuts|cutting|reduc\w*|sav\w*|shorten\w*|shrink\w*|less|fewer|smaller|shorter|trim\w*)"
+# The unit may be a % sign or spelled out; "cuts tokens by 65 percent" is the
+# same unverifiable claim as "cuts tokens by 65%".
+_PCT = r"(?:%|percent\b|pct\b)"
 CLAIM_PATTERNS = (
-    re.compile(rf"\b{_REDUCE_WORD}\b[^.]{{0,40}}?\b\d{{1,3}}\s?%", re.I),
-    re.compile(rf"\b\d{{1,3}}\s?%[^.]{{0,40}}?\b{_REDUCE_WORD}\b", re.I),
+    re.compile(rf"\b{_REDUCE_WORD}\b[^.]{{0,40}}?\b\d{{1,3}}\s?{_PCT}", re.I),
+    re.compile(rf"\b\d{{1,3}}\s?{_PCT}[^.]{{0,40}}?\b{_REDUCE_WORD}\b", re.I),
     # A bare ratio table, e.g. "`full`: ~65%". A skill shipped exactly this and
     # the two patterns above missed it because the reduction word sat on a
     # different line from the number.
-    re.compile(r"^\s*(?:[-*]\s*)?`[a-z0-9_-]+`\s*[:=]\s*~?\d{1,3}\s?%", re.I),
+    re.compile(rf"^\s*(?:[-*]\s*)?`[a-z0-9_-]+`\s*[:=]\s*~?\d{{1,3}}\s?{_PCT}", re.I),
 )
 
 # A line may opt out with a trailing `claim-guard: allow` comment, or the line
@@ -773,32 +947,56 @@ CLAIM_PATTERNS = (
 CLAIM_ALLOW = "claim-guard: allow"
 
 # Directories whose text is executable or generated, not user-facing prose.
-CLAIM_SKIP_DIRS = ("__pycache__", "benchmarks", "tests")
+# ccr/ stats/ cache/ are runtime state created next to the plugin; .git holds
+# history, none of it shipped prose.
+CLAIM_SKIP_DIRS = ("__pycache__", "benchmarks", "tests", ".git", "ccr", "stats", "cache")
+
+# User-facing text also ships inside .html and .js assets (settings pages,
+# stores, the injected page-head), and inside the banner extensions' strings.
+CLAIM_TEXT_EXTS = (".md", ".yaml", ".yml", ".json", ".html", ".js")
 
 
 def check_claims() -> None:
     offenders = []
+
+    def scan(rel: str, text: str) -> None:
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            # The marker may sit on the matched line, the one above it, or
+            # the one below it (annotating a line you just quoted).
+            window = "\n".join(lines[max(0, index - 1) : index + 2])
+            if CLAIM_ALLOW in window:
+                continue
+            for pattern in CLAIM_PATTERNS:
+                match = pattern.search(line)
+                if match:
+                    offenders.append(
+                        f"{rel}:{index + 1}: {match.group(0)!r} "
+                        f"(add '{CLAIM_ALLOW}' if this line explains the retraction)"
+                    )
+
     for base, dirs, names in os.walk(HERE):
         dirs[:] = [d for d in dirs if d not in CLAIM_SKIP_DIRS]
         for name in names:
-            if not name.endswith((".md", ".yaml", ".yml", ".json")):
+            if not name.endswith(CLAIM_TEXT_EXTS):
                 continue
             rel = os.path.relpath(os.path.join(base, name), HERE).replace(os.sep, "/")
             with open(os.path.join(base, name), "r", encoding="utf-8") as handle:
-                lines = handle.read().splitlines()
-            for index, line in enumerate(lines):
-                # The marker may sit on the matched line, the one above it, or
-                # the one below it (annotating a line you just quoted).
-                window = "\n".join(lines[max(0, index - 1) : index + 2])
-                if CLAIM_ALLOW in window:
-                    continue
-                for pattern in CLAIM_PATTERNS:
-                    match = pattern.search(line)
-                    if match:
-                        offenders.append(
-                            f"{rel}:{index + 1}: {match.group(0)!r} "
-                            f"(add '{CLAIM_ALLOW}' if this line explains the retraction)"
-                        )
+                scan(rel, handle.read())
+
+    # The banner extensions carry the user-visible strings in .py files, which
+    # the extension filter above deliberately skips (helper docstrings are not
+    # prose and must not be scanned). Only banners ship model- or user-facing
+    # text in .py, so only they are read here.
+    banner_dir = os.path.join(HERE, "extensions", "python", "banners")
+    if os.path.isdir(banner_dir):
+        for name in sorted(os.listdir(banner_dir)):
+            if not name.endswith(".py"):
+                continue
+            rel = f"extensions/python/banners/{name}"
+            with open(os.path.join(banner_dir, name), "r", encoding="utf-8") as handle:
+                scan(rel, handle.read())
+
     if offenders:
         for line in offenders:
             fail(f"unverified savings claim in {line}")
@@ -825,11 +1023,26 @@ def check_prompts(modules: dict) -> None:
         fail("no intensity levels parsed from caveman.intensity.md")
         return
 
+    # Parse the shipped markers directly as well. available_levels() filters
+    # whatever it parses against VALID_LEVELS, so a block whose level is
+    # outside the contract never reaches this check through it - the exact
+    # copy-drift this branch exists to catch.
+    with open(
+        os.path.join(HERE, "prompts", "caveman.intensity.md"), "r", encoding="utf-8"
+    ) as handle:
+        intensity_src = handle.read()
+    shipped = [
+        level.lower()
+        for level in re.findall(
+            r"^\[intensity:([a-z0-9-]+)\]\s*$", intensity_src, re.M
+        )
+    ]
+
     expected = ("lite", "full", "ultra", "wenyan-lite", "wenyan-full", "wenyan-ultra")
     missing = [level for level in expected if level not in defined]
     if missing:
         fail(f"intensity ruleset has no block for: {missing}")
-    extra = [level for level in defined if level not in expected]
+    extra = sorted(set(shipped) - set(expected))
     if extra:
         fail(f"intensity ruleset defines unknown level(s): {extra}")
 
@@ -876,7 +1089,9 @@ def check_module_contract(modules: dict) -> bool:
     mixes versions: an extension from v0.5.0 beside a `helpers/state.py` from
     v0.4.0 compiles, parses, and imports, then raises
     `AttributeError: module ... has no attribute 'resolve'` from inside
-    `get_system_prompt` and kills the agent turn.
+    `get_system_prompt` and kills the agent turn. The same happens with a
+    `helpers/plugins_config.py` from v0.4.0, which raises
+    `TypeError: get_config() got an unexpected keyword argument 'agent'`.
 
     Per-file checks cannot see that. This one asks the loaded modules what they
     call on each other, which is the question a partial upgrade gets wrong.
@@ -885,7 +1100,8 @@ def check_module_contract(modules: dict) -> bool:
     if compat is None:
         return True
     state = modules.get("state")
-    if state is None:
+    config = modules.get("plugins_config")
+    if state is None or config is None:
         return True
 
     missing = compat.missing_state_api(state)
@@ -896,10 +1112,26 @@ def check_module_contract(modules: dict) -> bool:
         )
         return False
 
+    missing = compat.missing_config_api(config)
+    if missing:
+        fail(
+            "helpers/plugins_config.py does not provide the API the shipped "
+            f"modules call: {', '.join(missing)}"
+        )
+        return False
+
     # Each caller must actually go through the guard, so a stale install fails
     # soft instead of raising out of an extension point.
     guarded = []
-    for alias in ("style", "validate", "observe", "shrink", "api_state"):
+    for alias in (
+        "style",
+        "validate",
+        "observe",
+        "shrink",
+        "command",
+        "api_state",
+        "api_stats",
+    ):
         module = modules.get(alias)
         if module is None:
             continue
@@ -907,10 +1139,24 @@ def check_module_contract(modules: dict) -> bool:
             source = _read_source(module)
         except OSError:
             continue
-        if "compat.state_api(" not in source:
+        # Require the guard only when the module actually reaches for that
+        # sibling: the command extension reads state but not config, and
+        # caveman_stats reads state but not config. Demanding both strings in
+        # every caller would fail a module that legitimately touches only one.
+        if "caveman_state" in source and "compat.state_api(" not in source:
             fail(
                 f"{alias} calls the state module without compat.state_api(); "
                 f"a partial upgrade would raise out of an extension point"
+            )
+            return False
+        if (
+            re.search(r"\bplugins_config\b|\bplugin_cfg\b", source)
+            and "compat.config_api(" not in source
+        ):
+            fail(
+                f"{alias} calls the config module without compat.config_api(); "
+                f"a partial upgrade would raise TypeError out of an "
+                f"extension point and stop the agent"
             )
             return False
         guarded.append(alias)
@@ -951,21 +1197,474 @@ def check_unit_tests() -> None:
     if not os.path.isfile(suite):
         fail("tests/test_caveman.py is missing")
         return
+    suites = [suite]
+    combined = os.path.join(HERE, "tests", "test_headroom_integration.py")
+    if os.path.isfile(combined):
+        suites.append(combined)
     try:
-        proc = subprocess.run(
-            [sys.executable, suite], capture_output=True, text=True, timeout=300
-        )
+        for suite in suites:
+            proc = subprocess.run(
+                [sys.executable, suite], capture_output=True, text=True, timeout=300
+            )
+            if proc.returncode != 0:
+                tail = (proc.stdout + proc.stderr).strip().splitlines()[-12:]
+                for line in tail:
+                    print(f"    {line}")
+                fail(
+                    f"unit tests failed: {os.path.basename(suite)} "
+                    f"(exit {proc.returncode})"
+                )
+                return
+            summary = (proc.stdout.strip().splitlines() or [""])[-1]
+            ok(f"unit tests pass [{os.path.basename(suite)}]: {summary}")
     except Exception as exc:
         fail(f"could not run the unit test suite: {type(exc).__name__}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+
+
+
+
+# ---------------------------------------------------------------------------
+# 9. Headroom half of the combined plugin (roadmap P1/P2/P4)
+# ---------------------------------------------------------------------------
+
+
+def _plugin_files(*subpaths):
+    for rel in subpaths:
+        base = os.path.join(HERE, *rel.split("/"))
+        if not os.path.isdir(base):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(base):
+            if "__pycache__" in dirpath:
+                continue
+            for name in sorted(filenames):
+                if name.endswith((".py", ".js")):
+                    yield os.path.join(dirpath, name)
+
+
+def _banned_import_sites(path: str):
+    """(line, reason) for import statements that reach the standalone package.
+
+    AST-based, because a line scan misses the canonical form the check exists
+    for: `from usr.plugins import headroom_compress` contains no
+    "usr.plugins.headroom_compress" literal, parenthesised multi-line imports
+    split the name across lines, and a dynamically built module name
+    (`import_module("usr.plugins." + mod)`) never spells the package out.
+    """
+    import ast
+
+    banned = "usr.plugins.headroom_compress"
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+    except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+        return []  # check_syntax already reports unparsable files
+
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == banned or alias.name.startswith(banned + "."):
+                    hits.append((node.lineno, f"import {alias.name}"))
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == banned or module.startswith(banned + "."):
+                names = ", ".join(a.name for a in node.names)
+                hits.append((node.lineno, f"from {module} import {names}"))
+            elif module == "usr.plugins":
+                for alias in node.names:
+                    if alias.name == "headroom_compress":
+                        hits.append(
+                            (
+                                node.lineno,
+                                f"from usr.plugins import {alias.name}",
+                            )
+                        )
+        elif isinstance(node, ast.Call):
+            func = node.func
+            fname = getattr(func, "attr", None) or getattr(func, "id", None)
+            if fname not in ("import_module", "__import__"):
+                continue
+            texts = [
+                n.value
+                for n in ast.walk(node)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            ]
+            joined = "\n".join(texts)
+            has_non_literal = any(
+                not isinstance(arg, ast.Constant) for arg in node.args
+            )
+            if "headroom_compress" in joined:
+                hits.append(
+                    (
+                        node.lineno,
+                        f"{fname}() with a name containing headroom_compress",
+                    )
+                )
+            elif has_non_literal and "usr.plugins" in joined:
+                hits.append(
+                    (
+                        node.lineno,
+                        f"{fname}() builds a usr.plugins.* module name "
+                        f"dynamically; verify it cannot resolve to the "
+                        f"standalone plugin",
+                    )
+                )
+    return hits
+
+
+def check_headroom_isolation() -> None:
+    """No runtime module may import the standalone plugin's package.
+
+    The whole point of the port is that the combined plugin owns its code,
+    config, CCR database and stats. An import of `usr.plugins.headroom_compress`
+    would quietly bind this plugin's behaviour to the other plugin's mutable
+    config and caches - and it would keep working right up until the user
+    edited something over there.
+    """
+    offenders = []
+    scan_paths = [
+        path
+        for path in _plugin_files(
+            "helpers", "api", "extensions", "tools", "skills", "benchmarks"
+        )
+        if path.endswith(".py")
+    ]
+    # Root scripts are plugin code too. execute.py is excluded on purpose: it
+    # carries the banned name because this check exists.
+    scan_paths.extend(
+        os.path.join(HERE, name)
+        for name in ("hooks.py", "install.py", "headroom_setup.py")
+    )
+    for path in scan_paths:
+        for lineno, reason in _banned_import_sites(path):
+            offenders.append(f"{os.path.relpath(path, HERE)}:{lineno}: {reason}")
+    if offenders:
+        fail(
+            "combined plugin imports the standalone plugin's package "
+            f"(P1.2): {offenders}"
+        )
         return
-    if proc.returncode != 0:
-        tail = (proc.stdout + proc.stderr).strip().splitlines()[-12:]
-        for line in tail:
-            print(f"    {line}")
-        fail(f"unit tests failed (exit {proc.returncode})")
+
+    # Same rule for the WebUI: a stale plugin segment in a URL 404s at runtime.
+    # Literal segments, template literals and "/plugins/" + name concatenations
+    # are all checked - a dynamic segment cannot be verified statically, so it
+    # fails closed.
+    for rel, src in _webui_sources():
+        for plugin in re.findall(r"/plugins/([A-Za-z0-9_]+)/", src):
+            if plugin != PLUGIN_NAME:
+                fail(
+                    f"{rel} calls /plugins/{plugin}/; "
+                    "combined-plugin routes live under "
+                    f"/plugins/{PLUGIN_NAME}/"
+                )
+                return
+        if re.search(r"[\"'`]/plugins/[\"'`]\s*\+", src) or re.search(
+            r"`/plugins/\$\{", src
+        ):
+            fail(
+                f"{rel} builds a /plugins/ route dynamically; the plugin "
+                "segment cannot be verified, use an explicit "
+                f"/plugins/{PLUGIN_NAME}/ path"
+            )
+            return
+    ok("no combined-plugin module or WebUI asset references the standalone plugin")
+
+
+
+def check_headroom_config_parity() -> None:
+    """default_config.yaml and DEFAULTS must describe the same settings.
+
+    A key in the YAML that DEFAULTS does not list is a setting the user can
+    change and nothing reads. A key in DEFAULTS that the YAML omits is a
+    setting that exists only in code. Either one is a silent lie in the
+    settings UI.
+    """
+    from usr.plugins.caveman.helpers import plugins_config as plugin_cfg
+
+    defaults = plugin_cfg.DEFAULTS.get("headroom")
+    if not isinstance(defaults, dict):
+        fail("plugins_config.DEFAULTS has no 'headroom' section")
         return
-    summary = (proc.stdout.strip().splitlines() or [""])[-1]
-    ok(f"unit tests pass: {summary}")
+
+    try:
+        import yaml
+
+        with open(os.path.join(HERE, "default_config.yaml"), "r", encoding="utf-8") as h:
+            raw = yaml.safe_load(h) or {}
+    except Exception as exc:
+        fail(f"could not read default_config.yaml: {exc}")
+        return
+
+    section = raw.get("headroom")
+    if not isinstance(section, dict):
+        fail("default_config.yaml has no 'headroom' section")
+        return
+
+    # The Caveman top-level keys are held to the same standard as the headroom
+    # section: a YAML key DEFAULTS does not list is a setting the user can
+    # change and nothing reads.
+    top_yaml = set(raw) - {"headroom"}
+    top_code = set(plugin_cfg.DEFAULTS) - {"headroom"}
+    if top_yaml != top_code:
+        fail(
+            "top-level settings disagree between default_config.yaml and "
+            f"DEFAULTS: yaml-only={sorted(top_yaml - top_code)} "
+            f"code-only={sorted(top_code - top_yaml)}"
+        )
+        return
+
+    yaml_keys = set(section)
+    code_keys = set(defaults)
+    if yaml_keys != code_keys:
+        fail(
+            "headroom settings disagree between default_config.yaml and "
+            f"DEFAULTS: yaml-only={sorted(yaml_keys - code_keys)} "
+            f"code-only={sorted(code_keys - yaml_keys)}"
+        )
+        return
+
+    yaml_proxy = set(section.get("proxy") or {})
+    code_proxy = set(defaults.get("proxy") or {})
+    if yaml_proxy != code_proxy:
+        fail(
+            "headroom.proxy settings disagree between default_config.yaml "
+            f"and DEFAULTS: yaml-only={sorted(yaml_proxy - code_proxy)} "
+            f"code-only={sorted(code_proxy - yaml_proxy)}"
+        )
+        return
+
+    # Defaults must be safe: compression off, protections on.
+    if defaults.get("enabled") is not False:
+        fail("headroom.enabled must default to false (independent opt-in)")
+    for key in ("protect_reads", "protect_code", "ccr_enabled"):
+        if defaults.get(key) is not True:
+            fail(f"headroom.{key} must default to true")
+
+    ok(
+        f"settings agree across YAML and DEFAULTS "
+        f"(top level: {len(top_code)} keys; headroom: {len(code_keys)} keys)"
+    )
+
+
+def check_registration_uniqueness() -> None:
+    """One Extension per file, one ApiHandler per file, unique banner ids.
+
+    Agent Zero registers classes[0] per file, so a second class is dead code
+    that looks alive; a duplicated banner id renders twice.
+    """
+    import ast
+
+    def subclasses(path, base):
+        with open(path, "r", encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        found = []
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for b in node.bases:
+                name = b.id if isinstance(b, ast.Name) else getattr(b, "attr", "")
+                if name == base:
+                    found.append(node.name)
+                    break
+        return found
+
+    problems = []
+    for path in _plugin_files("extensions"):
+        found = subclasses(path, "Extension")
+        if len(found) != 1:
+            problems.append(
+                f"{os.path.relpath(path, HERE)} has {len(found)} Extension classes"
+            )
+    for path in _plugin_files("api"):
+        found = subclasses(path, "ApiHandler")
+        if len(found) != 1:
+            problems.append(
+                f"{os.path.relpath(path, HERE)} has {len(found)} ApiHandler classes"
+            )
+    if problems:
+        fail("duplicate registration risk: " + "; ".join(problems))
+        return
+
+    # Banner ids may be literals in the banner file or constants defined in
+    # helpers (the coexistence banner imports BANNER_ID from
+    # helpers/headroom/coexistence.py). Collect both, statically, or a
+    # duplicate constant is invisible.
+    helper_constants: dict = {}
+    for path in _plugin_files("helpers"):
+        if not path.endswith(".py"):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                tree = ast.parse(handle.read())
+        except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+            continue
+        for node in tree.body:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in ("BANNER_ID", "CARD_ID")
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                helper_constants.setdefault(node.targets[0].id, set()).add(
+                    node.value.value
+                )
+
+    ids = []
+    for path in _plugin_files("extensions/python/banners"):
+        with open(path, "r", encoding="utf-8") as handle:
+            src = handle.read()
+        ids.extend(re.findall(r'"id":\s*"([a-z0-9_-]+)"', src))
+        ids.extend(
+            re.findall(r'^(?:CARD_ID|BANNER_ID)\s*=\s*"([a-z0-9_-]+)"', src, re.M)
+        )
+        try:
+            tree = ast.parse(src)
+        except (SyntaxError, ValueError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key, value in zip(node.keys, node.values):
+                if not (
+                    isinstance(key, ast.Constant)
+                    and key.value == "id"
+                    and isinstance(value, (ast.Name, ast.Attribute))
+                ):
+                    continue
+                const_name = (
+                    value.id if isinstance(value, ast.Name) else value.attr
+                )
+                if const_name in ("BANNER_ID", "CARD_ID"):
+                    ids.extend(sorted(helper_constants.get(const_name, ())))
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        fail(f"duplicate banner ids: {duplicates}")
+        return
+    ok(
+        f"one class per extension/API file; {len(ids)} banner ids are unique "
+        f"({sorted(set(ids))})"
+    )
+
+
+def _swap_framework_modules():
+    """Swap stub framework modules for the real ones when they import.
+
+    Returns (mode, saved). "live" means the real helpers.* are now in
+    sys.modules and the migration/coexistence checks read the real plugin
+    registry; "stub" means the real framework could not be imported from this
+    interpreter (standalone clone, or missing framework dependencies), the
+    stubs were kept, and no claim about the install may be reported from them.
+    """
+    saved = {}
+    for key in list(sys.modules):
+        if key == "helpers" or key.startswith("helpers."):
+            saved[key] = sys.modules.pop(key)
+    try:
+        import helpers.plugins  # noqa: F401 - the registry the checks read
+
+        return "live", saved
+    except Exception:
+        # Drop any half-imported real helpers, then put the stubs back so the
+        # rest of the process sees exactly the state it had before.
+        for key in list(sys.modules):
+            if (key == "helpers" or key.startswith("helpers.")) and key not in saved:
+                del sys.modules[key]
+        sys.modules.update(saved)
+        return "stub", saved
+
+
+def check_headroom_live() -> None:
+    """Exercise the migration and coexistence modules for real.
+
+    A preview must not write. This runs against the user's real config paths,
+    which is why it stops at preview: an apply here would be exactly the
+    surprise the roadmap forbids.
+
+    The report says which mode ran. Stub data cannot tell whether the
+    standalone plugin is installed, so in stub mode no presence claim is made
+    at all - the old wording reported "standalone not installed" from a stub
+    that hardcodes find_plugin_dir() -> None, which is a fabricated fact.
+    """
+    mode, saved_modules = _swap_framework_modules()
+    try:
+        _check_headroom_live(mode)
+    finally:
+        for key in list(sys.modules):
+            if (key == "helpers" or key.startswith("helpers.")) and key not in (
+                saved_modules
+            ):
+                del sys.modules[key]
+        sys.modules.update(saved_modules)
+
+
+def _check_headroom_live(mode: str) -> None:
+    try:
+        from usr.plugins.caveman.helpers.headroom import coexistence, migration
+    except Exception as exc:
+        fail(f"could not import the headroom helpers: {type(exc).__name__}: {exc}")
+        return
+
+    try:
+        plan = migration.build_plan()
+    except Exception as exc:
+        fail(f"migration.build_plan() raised: {type(exc).__name__}: {exc}")
+        return
+
+    for key in ("sources", "to_import", "conflicts", "notes", "warnings"):
+        if key not in plan:
+            fail(f"migration plan is missing the {key!r} key")
+            return
+
+    dest = plan["destination"]
+    if not dest.get("readable"):
+        fail(f"plugin config.json is not readable: {dest.get('error')}")
+        return
+
+    try:
+        report = coexistence.overlap()
+    except Exception as exc:
+        fail(f"coexistence.overlap() raised: {type(exc).__name__}: {exc}")
+        return
+    if "overlaps" not in report:
+        fail("coexistence report has no 'overlaps' key")
+        return
+
+    if mode == "live":
+        if report.get("overlaps"):
+            print(
+                f"[{PLUGIN_NAME}] note: the standalone headroom_compress "
+                "plugin is enabled alongside this one. Nothing was changed - "
+                "see the coexistence warning and the plugin README."
+            )
+        standalone = plan.get("standalone") or {}
+        if standalone.get("present"):
+            where = "present"
+        elif standalone.get("lookup_error"):
+            where = "presence unknown (registry unavailable)"
+        else:
+            where = "not installed"
+        if standalone.get("lookup_error"):
+            print(f"[{PLUGIN_NAME}] note: {standalone['lookup_error']}")
+        detail = (
+            f"live framework; standalone {where}; "
+            f"{len(plan['sources'])} source scope(s), "
+            f"{len(plan['to_import'])} importable key(s), "
+            f"{len(plan['conflicts'])} conflict(s)"
+        )
+    else:
+        print(
+            f"[{PLUGIN_NAME}] note: framework helpers unavailable from this "
+            "interpreter; migration and coexistence ran against stubs, so "
+            "standalone-plugin detection is unavailable (no claim is made "
+            "about whether the standalone plugin is installed)."
+        )
+        detail = "stub: framework unavailable; standalone detection unavailable"
+    ok(f"migration preview and coexistence detection work ({detail})")
 
 
 # ---------------------------------------------------------------------------
@@ -1020,6 +1719,10 @@ def main() -> int:
     check_tool_claims()
     check_prompts(modules)
     check_claims()
+    check_headroom_isolation()
+    check_headroom_config_parity()
+    check_registration_uniqueness()
+    check_headroom_live()
     check_unit_tests()
     return finish(check_toggle())
 

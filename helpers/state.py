@@ -334,13 +334,15 @@ def set_state(
             entry["set_at"] = datetime.now(timezone.utc).isoformat()
             state[chat_id] = entry
         written = _write_json(_state_path(), state)
-
-    if written:
-        _append_mode_change(
-            chat_id,
-            _normalize_mode(entry.get("level"), entry.get("enabled")),
-            previous_mode,
-        )
+        if written:
+            # Keep the state write and its transition row in one critical
+            # section. Otherwise concurrent setters can append transitions in
+            # the opposite order from the state changes they describe.
+            _append_mode_change(
+                chat_id,
+                _normalize_mode(entry.get("level"), entry.get("enabled")),
+                previous_mode,
+            )
     return written
 
 
