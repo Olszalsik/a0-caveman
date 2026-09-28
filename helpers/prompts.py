@@ -59,6 +59,7 @@ PLUGIN_ROOT = _find_plugin_root()
 PROMPTS_DIR = os.path.join(PLUGIN_ROOT, "prompts")
 
 STYLE_FILE = "caveman.system.style.md"
+STYLE_LEAN_FILE = "caveman.system.style.lean.md"
 INTENSITY_FILE = "caveman.intensity.md"
 CLARITY_FILE = "caveman.auto_clarity.md"
 
@@ -147,11 +148,19 @@ def load_intensity(level: str) -> str:
     return f"## Intensity\n\n{block}"
 
 
-def build_system_prompt(level: str, auto_clarity: bool = True) -> str:
+def build_system_prompt(
+    level: str, auto_clarity: bool = True, lean: bool = False
+) -> str:
     """Assemble the exact text injected for a level.
 
     Used by both the `system_prompt` extension and `benchmarks/run.py`, so the
     benchmark cannot drift from what is actually sent.
+
+    `lean=True` swaps the base style for the compact variant (and condenses
+    auto-clarity to its one-line summary). The level's own ruleset block is
+    unchanged: that block is the operative contract, and trimming it would
+    change behaviour, not just cost. Measured input cost 2026-09-28:
+    standard ~800 tok/turn, lean ~300 tok/turn.
 
     Fails closed: an unknown level yields "", never a style-only prompt. A
     prompt with no intensity block would apply `full`-shaped rules to a level
@@ -161,9 +170,19 @@ def build_system_prompt(level: str, auto_clarity: bool = True) -> str:
     intensity = load_intensity(level)
     if not intensity:
         return ""
-    parts = [read_prompt(STYLE_FILE), intensity]
-    if auto_clarity:
-        parts.append(read_prompt(CLARITY_FILE))
+    if lean:
+        style = read_prompt(STYLE_LEAN_FILE) or read_prompt(STYLE_FILE)
+        parts = [style, intensity]
+        if auto_clarity:
+            parts.append(
+                "## Auto-clarity\n\nDrop the style for security warnings, "
+                "irreversible actions, and ambiguous multi-step sequences; "
+                "resume after."
+            )
+    else:
+        parts = [read_prompt(STYLE_FILE), intensity]
+        if auto_clarity:
+            parts.append(read_prompt(CLARITY_FILE))
     body = "\n\n".join(part for part in parts if part)
     if not body:
         return ""

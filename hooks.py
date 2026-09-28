@@ -26,7 +26,7 @@ import traceback
 log = logging.getLogger(__name__)
 
 PLUGIN_NAME = "caveman"
-PLUGIN_VERSION = "0.5.3"
+PLUGIN_VERSION = "0.5.4"
 
 
 def _auto_start_proxy() -> None:

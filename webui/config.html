@@ -87,6 +87,14 @@
     </div>
 
     <div class="settings-section">
+      <label><input type="checkbox" x-model="config.lean_style_prompt" />
+        <strong>Lean style prompt</strong></label>
+      <small>Swap the base style for a compact variant (~350 tokens injected
+        per turn instead of ~800; the level's own rules are unchanged). Cheaper
+        on short workloads. Measured with <code>benchmarks/run.py --lean</code>.</small>
+    </div>
+
+    <div class="settings-section">
       <label><input type="checkbox" x-model="config.shrink_tools" />
         <strong>Shrink tool descriptions</strong></label>
       <small>Compress tool names and descriptions before each model call.

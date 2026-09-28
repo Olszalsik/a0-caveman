@@ -6,6 +6,36 @@ to the style rules and the level set.
 
 [upstream]: https://github.com/juliusbrussee/caveman
 
+## 0.5.4 (2026-09-28)
+
+Benchmark-remediation pass: the first honest A/B (n=1, 1:1 token scoring)
+reported a net loss, which pointed at the measurement, not the style. Four
+changes shipped, and the n=3 billed re-run measures a pooled saving (details
+and numbers in README "Honest numbers" and `REMEDIATION.md` § "Benchmark v2").
+
+### Added
+
+- **Lean style prompt** (`lean_style_prompt: false` by default): a compact
+  base-style variant injected at ~350 tokens/turn instead of ~800, with the
+  level's ruleset unchanged. WebUI toggle and a `--lean` harness arm.
+- **Cost-weighted benchmark scoring**: `benchmarks/run.py --io-price`
+  re-scores provider-billed usage at an output:input price ratio against the
+  terse control, reports a per-arm billed table and `reasoning_tokens_est`
+  (billed completion minus counted content), and warns when the model looks
+  like a reasoning model (whose thinking tokens the content tables read as
+  savings).
+
+### Measured
+
+- 10 prompts x 3 repeats on `openai/glm-5.3-flash`, billed usage vs the
+<!-- quotes this repo's own measured benchmark output; claim-guard: allow -->
+  `Answer concisely.` control at 4:1 output:input pricing: `full` -41%,
+  `full-lean` -47%, `ultra` -31%, `ultra-lean` -32%; at 1:1 -8% / -32% /
+  +2% / -17%. Two of ten prompts lose on every arm. Upstream's own 65%
+  headline remains retracted (`docs/HONEST-NUMBERS.md`) and no retraction
+  changes here; these are this port's own measured numbers, quoted with the
+  method and its limits.
+
 ## 0.5.3 (2026-09-28)
 
 Remediation pass documented in `REMEDIATION.md` (follow-up to `AUDIT.md`).

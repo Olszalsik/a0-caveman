@@ -106,15 +106,51 @@ To get a real number for your workload:
 
 ```bash
 python benchmarks/run.py --model gpt-4o-mini --repeats 3 --output results.json
+python benchmarks/run.py --model gpt-4o-mini --repeats 3 --lean --io-price 4.0
 ```
 
 See `benchmarks/README.md` for the method and its limits.
 
+**What this port measured (2026-09-28).** The shipped harness ran 10 coding
+prompts x 3 repeats x 6 arms on `openai/glm-5.3-flash` (a reasoning model)
+<!-- quotes this repo's own measured benchmark output; claim-guard: allow -->
+via the ollama cloud endpoint, scoring the provider's own billed usage at a
+4:1 output:input price ratio (`cost = prompt_tokens + completion_tokens x 4`).
+Pooled results vs the `Answer concisely.` control:
+
+| arm | content tokens | billed cost, 4:1 | billed cost, 1:1 |
+|---|---|---|---|
+| `full` | -34% | **-41%** | -8% |
+| `full` (lean) | -33% | **-47%** | -32% |
+| `ultra` | -47% | **-31%** | +2% |
+| `ultra` (lean) | -40% | **-32%** | -17% |
+
+Reading it honestly:
+
+- **The savings are real but not uniform.** Pooled, every arm costs less than
+  the terse control at real price ratios. Per prompt, though, `async-refactor`
+  and `pr-security-review` lose on every arm even at 4:1 (prompts the terse
+  control happened to answer very briefly), and `ultra` additionally loses
+  `auth-middleware-fix`. If you enable caveman on short-answer workloads,
+  you can lose.
+- **Reasoning eats most of the billed output.** ~16k of ~25k billed
+  completion tokens for `full` are thinking tokens (completion minus counted
+  content). A reasoning model is the worst case for a style prompt, and
+  caveman still came out ahead pooled; on a non-reasoning model the same
+  prompt set should do better, not worse.
+- **The lean variant is the safer default.** It injects ~350 tokens per turn
+  instead of ~800 with nearly the same savings, and it wins clearly at 1:1
+  pricing (input-heavy or cached billing): -32% where standard `full` is
+  only -8% and `ultra` goes +2%.
+- **Single-repeat numbers are unstable.** An earlier n=1 run on 3 prompts
+  showed a net loss on 2 of 3 prompts; the same prompts inside this n=3 run
+  flipped to savings. Do not quote n=1.
+
 **When caveman loses.** The style prompt is re-sent every turn, so it has a
 fixed input cost of roughly 750-850 tokens per turn on the shipped prompt
-fragments. On terse workloads, or under per-request / per-message pricing,
-that cost can exceed the output reduction. Upstream documents a measured
-net-loss case in
+fragments (about 350-375 with the lean variant). On terse workloads, or under
+per-request / per-message pricing, that cost can exceed the output reduction.
+Upstream documents a measured net-loss case in
 [issue #145](https://github.com/juliusbrussee/caveman/issues/145). Measure
 before enabling it broadly.
 

@@ -927,6 +927,61 @@ def test_observer_degrades_instead_of_raising():
     assert state.get_stats("_t_stale_observe") == {}
 
 
+def test_style_survives_stale_prompts_module():
+    """Production 2026-09-28: extensions hot-load, helpers/prompts.py does not.
+
+    A freshly loaded `_20_caveman_style.py` calling a cached pre-lean
+    `build_system_prompt` raised `TypeError: ... unexpected keyword argument
+    'lean'` out of `get_system_prompt` and killed the agent turn. The
+    extension must fall back to the plain build (lean silently skipped) and
+    must re-raise any unrelated TypeError.
+    """
+    calls = []
+
+    class _StalePrompts:
+        @staticmethod
+        def build_system_prompt(level, auto_clarity=True, **kwargs):
+            if "lean" in kwargs:
+                raise TypeError(
+                    "build_system_prompt() got an unexpected keyword argument "
+                    "'lean'"
+                )
+            calls.append((level, auto_clarity))
+            return "PLAIN"
+
+    agent = Agent("_t_stale_prompts")
+    original = style.caveman_prompts
+    try:
+        style.caveman_prompts = _StalePrompts()
+        system_prompt = []
+        asyncio.run(style.CavemanStyle(agent).execute(system_prompt=system_prompt))
+    finally:
+        style.caveman_prompts = original
+    assert system_prompt == ["PLAIN"], system_prompt
+    assert calls == [("full", True)], calls
+
+
+def test_style_reraises_unrelated_typeerror():
+    class _BrokenPrompts:
+        @staticmethod
+        def build_system_prompt(level, auto_clarity=True, **kwargs):
+            raise TypeError("object is not callable")
+
+    agent = Agent("_t_broken_prompts")
+    original = style.caveman_prompts
+    try:
+        style.caveman_prompts = _BrokenPrompts()
+        asyncio.run(
+            style.CavemanStyle(agent).execute(system_prompt=[])
+        )
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("unrelated TypeError must not be swallowed")
+    finally:
+        style.caveman_prompts = original
+
+
 def test_validator_degrades_instead_of_raising():
     validate.compat.reset_warnings()
     agent = Agent("_t_stale_validate")

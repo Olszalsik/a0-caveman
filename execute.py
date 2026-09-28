@@ -52,7 +52,7 @@ import sys
 import types
 
 PLUGIN_NAME = "caveman"
-EXPECTED_VERSION = "0.5.3"
+EXPECTED_VERSION = "0.5.4"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 

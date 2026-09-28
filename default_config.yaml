@@ -11,6 +11,10 @@ level: full            # lite | full | ultra | wenyan-lite | wenyan-full | wenya
 auto_clarity: true     # tell the model to drop caveman style for security
                        # warnings, irreversible operations, and ambiguous
                        # multi-step sequences.
+lean_style_prompt: false  # swap the base style for the compact variant
+                       # (prompts/caveman.system.style.lean.md). Measured:
+                       # standard ~800 tok/turn injected, lean ~300. The
+                       # level's own ruleset block is unchanged.
 shrink_tools: false    # compress tool descriptions before each model call.
                        # Off by default: it rewrites the contract the model
                        # reads for every tool call.

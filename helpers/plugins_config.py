@@ -25,6 +25,7 @@ DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "level": "full",
     "auto_clarity": True,
+    "lean_style_prompt": False,
     "shrink_tools": False,
     "sanitize_responses": False,
     # Headroom input compression is independent and off by default.

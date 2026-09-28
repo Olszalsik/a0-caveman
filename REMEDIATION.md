@@ -145,12 +145,54 @@ totals above). Verdict for this model/workload: 1 of 3 prompts a modest
 billed saving, 2 a net loss; the reasoning-model behaviour (style prompt
 makes the model reason longer) dominates. This matches the README's
 documented net-loss case; no savings claim goes into the repo docs. Raw
-results in `tmp/p44_benchmark_results*.json` (not committed).
+results in `tmp/p44_benchmark_results*.json` (not committed). **Superseded
+by the n=3 run below: the n=1 numbers were noise, not signal.**
 
 Harness bug found and fixed while running this: `benchmarks/run.py`
 raised `ZeroDivisionError` when a control arm returned 0 tokens (the
 no-system-prompt baseline arm burned its whole completion budget on
 reasoning with glm-5.3-flash). Guarded `terse_total` divisions.
+
+## Benchmark v2: cost-weighted, n=3, lean arms (2026-09-28)
+
+The P4.4 benchmark scored tokens 1:1 and ran n=1; the plan that followed
+(user: "if we have net loss, this plugin is pointless - find the settings
+where we can create savings") produced four changes, all shipped in 0.5.4:
+
+1. **Harness scoring fix.** `benchmarks/run.py --io-price` (default 4.0)
+   re-scores the provider's own billed usage at an output:input price ratio
+   (`cost = prompt_tokens + completion_tokens * ratio`) against the terse
+   control, adds a `reasoning_tokens_est` column (billed completion minus
+   locally counted content), and records `metadata.io_price` plus a `billed`
+   block in the report JSON. The 1:1 content tables stay for comparability.
+2. **Lean style prompt.** `prompts/caveman.system.style.lean.md` +
+   `lean_style_prompt: false` (DEFAULTS, default_config.yaml, WebUI toggle,
+   `--lean` harness flag). Measured injection: 802 tok/turn (full) and 820
+   (ultra) standard, 355/373 lean - 56% cheaper, level ruleset unchanged.
+3. **Reasoning-model warning.** The harness prints a caveat when the model id
+   looks like a reasoning model: trust the billed table, not the content
+   table.
+4. **n=3 rerun.** 10 prompts x 6 arms (baseline / terse / full / full-lean /
+   ultra / ultra-lean) x 3 repeats on glm-5.3-flash, max_tokens 4000, run as
+   10 parallel single-prompt shards (the sequential run measured ~75 s/call;
+   sharded, ~45 min wall).
+
+<!-- quotes this repo's own measured benchmark output; claim-guard: allow -->
+Pooled billed cost vs the terse control at 4:1: full -41%, full-lean -47%,
+ultra -31%, ultra-lean -32%. At 1:1: -8% / -32% / +2% / -17%. Content tokens
+vs terse: full -34%, full-lean -33%, ultra -47%, ultra-lean -40%.
+`reasoning_tokens_est` shows ~16k of ~25k billed completion tokens for
+`full` are thinking tokens - reasoning dominates billed output, which is why
+the 1:1 content tables overstate the win and why the billed table is the one
+to quote. Per prompt at 4:1, `async-refactor` and `pr-security-review` lose
+on every arm (the terse control answered them very briefly) and `ultra`
+additionally loses `auth-middleware-fix`.
+
+The honest headline is in README "Honest numbers"; raw shard results in
+`tmp/p55_bench_p*.json` + `tmp/p55merge.py` (not committed). The P4.4 n=1
+verdict above ("net loss on 2 of 3") is kept for the record because the
+flip between n=1 and n=3 on the same prompts is itself a finding: n=1
+numbers are noise and must not be quoted.
 
 ## Adapter validation closed (2026-09-28)
 

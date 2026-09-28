@@ -20,10 +20,12 @@ terse control has not earned its input-token cost.
 
 What this does and does not establish
 -------------------------------------
-It measures output length under one model on one prompt set. It does not
-prove semantic or technical equivalence, and it does not measure input-token
-cost, cache behaviour, latency, or billing. See benchmarks/README.md and
-upstream `docs/technical/accounting-and-evidence.md`.
+It measures output length under one model on one prompt set, and re-scores
+the provider's own billed usage counters at a configurable output:input
+price ratio (`--io-price`, default 4.0). It does not prove semantic or
+technical equivalence, and it does not model cache behaviour, latency, or
+your actual provider prices. See benchmarks/README.md and upstream
+`docs/technical/accounting-and-evidence.md`.
 
 There is no `--dry-run` number. The previous harness had one that fed the
 prompt text back in as a synthetic "response" and then reported a reduction
@@ -34,6 +36,8 @@ Usage:
     python benchmarks/run.py --model gpt-4o-mini --output results.json
     python benchmarks/run.py --model gpt-4o-mini --levels full,ultra
     python benchmarks/run.py --repeats 3 --temperature 0.0
+    python benchmarks/run.py --repeats 3 --lean      # adds <level>-lean arms
+    python benchmarks/run.py --io-price 4.0 --output results.json
     python benchmarks/run.py --list
     python benchmarks/run.py --validate
 """
@@ -160,7 +164,7 @@ def _bootstrap_imports() -> None:
 _bootstrap_imports()
 
 
-def build_system_prompt(level: str, auto_clarity: bool = True) -> str:
+def build_system_prompt(level: str, auto_clarity: bool = True, lean: bool = False) -> str:
     """The exact text the system_prompt extension injects for this level.
 
     Delegates to `helpers.prompts`, the same module the extension uses, so the
@@ -169,7 +173,9 @@ def build_system_prompt(level: str, auto_clarity: bool = True) -> str:
     """
     from usr.plugins.caveman.helpers import prompts as caveman_prompts
 
-    return caveman_prompts.build_system_prompt(level, auto_clarity=auto_clarity)
+    return caveman_prompts.build_system_prompt(
+        level, auto_clarity=auto_clarity, lean=lean
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +271,18 @@ async def main_async() -> int:
     parser.add_argument("--repeats", type=int, default=1, help="runs per arm per prompt")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=800)
+    parser.add_argument(
+        "--io-price",
+        type=float,
+        default=4.0,
+        help="output:input price ratio used for cost-weighted totals "
+        "(defaults to 4.0; output tokens are typically 3-5x input price)",
+    )
+    parser.add_argument(
+        "--lean",
+        action="store_true",
+        help="also run a <level>-lean arm per level (compact style variant)",
+    )
     parser.add_argument("--output", default=None, help="write raw results JSON here")
     parser.add_argument("--list", action="store_true", help="list prompts and exit")
     parser.add_argument(
@@ -279,6 +297,9 @@ async def main_async() -> int:
         return 1
     if args.max_tokens < 1:
         print("ERROR: --max-tokens must be at least 1", file=sys.stderr)
+        return 1
+    if args.io_price <= 0:
+        print("ERROR: --io-price must be > 0", file=sys.stderr)
         return 1
 
     if not PROMPTS_FILE.is_file():
@@ -304,10 +325,17 @@ async def main_async() -> int:
         print(f"ERROR: unknown level(s): {bad}. Valid: {list(VALID_LEVELS)}", file=sys.stderr)
         return 1
 
-    # Arms: two references plus one per level.
+    # Arms: two references plus one per level (and, with --lean, one more per
+    # level under the compact style). Lean arm names are suffixed so the two
+    # variants of a level can share one run and be compared directly.
     arms: dict[str, str | None] = {"__baseline__": None, "__terse__": TERSE_CONTROL}
+    level_arms = list(levels)
     for lvl in levels:
         arms[lvl] = build_system_prompt(lvl)
+        if args.lean:
+            lean_name = f"{lvl}-lean"
+            arms[lean_name] = build_system_prompt(lvl, lean=True)
+            level_arms.append(lean_name)
     missing_fragments = [lvl for lvl in levels if not build_system_prompt(lvl)]
     if missing_fragments:
         print(
@@ -390,6 +418,8 @@ async def main_async() -> int:
             "temperature": args.temperature,
             "max_tokens": args.max_tokens,
             "repeats": args.repeats,
+            "io_price": args.io_price,
+            "lean_arms": args.lean,
             "n_prompts": len(prompts),
             "fixture_version": fixture.get("version"),
             "tokenizer": counter.detail,
@@ -420,7 +450,7 @@ async def main_async() -> int:
         },
     }
 
-    for lvl in levels:
+    for lvl in level_arms:
         per_prompt = []
         for pid in common:
             skill = token_map[lvl].get(pid, 0)
@@ -458,6 +488,38 @@ async def main_async() -> int:
             },
             "per_prompt": per_prompt,
         }
+
+    # ---- provider-billed usage --------------------------------------------
+    # The content-token tables above score 1:1, but output tokens typically
+    # bill 3-5x input. This section re-scores the provider's own usage
+    # counters at the given price ratio. Reasoning tokens (which reasoning
+    # models bill as completion) are visible as the gap between billed
+    # completion and locally counted content tokens.
+    def billed_totals(arm: str) -> dict:
+        prompt_tok = completion_tok = 0
+        for pid in common:
+            for usage in provider_usage.get(arm, {}).get(pid, []):
+                prompt_tok += int(usage.get("prompt_tokens") or 0)
+                completion_tok += int(usage.get("completion_tokens") or 0)
+        content_tok = sum(token_map[arm].get(pid, 0) for pid in common)
+        cost = prompt_tok + completion_tok * args.io_price
+        return {
+            "prompt_tokens": prompt_tok,
+            "completion_tokens": completion_tok,
+            "content_tokens": content_tok,
+            "reasoning_tokens_est": max(0, completion_tok - content_tok),
+            "cost_weighted": round(cost, 1),
+        }
+
+    billed = {arm: billed_totals(arm) for arm in arms}
+    terse_cost = billed["__terse__"]["cost_weighted"]
+    for arm in arms:
+        billed[arm]["vs_terse_pct"] = (
+            round((billed[arm]["cost_weighted"] - terse_cost) / terse_cost, 4)
+            if terse_cost
+            else 0.0
+        )
+    report["billed"] = billed
 
     # ---- print -----------------------------------------------------------
     print()
@@ -507,6 +569,40 @@ async def main_async() -> int:
     print(f"  break-even = output tokens that must be saved per turn to offset the")
     print(f"  input the style prompt adds. baseline arm averages {per_prompt_mean:.0f} tok/turn.")
     print("  [basis: measured on prompt text; provider cache behaviour not modelled]")
+
+    print()
+    print(
+        f"Provider-billed usage, cost-weighted "
+        f"(cost = prompt + completion x {args.io_price:g})"
+    )
+    print()
+    print(
+        f"  {'arm':<16}{'prompt':>9}{'compl':>9}{'reason_est':>12}"
+        f"{'cost':>10}{'vs terse':>10}"
+    )
+    for arm in arms:
+        b = billed[arm]
+        label = arm.replace("__", "")
+        print(
+            f"  {label:<16}{b['prompt_tokens']:>9}{b['completion_tokens']:>9}"
+            f"{b['reasoning_tokens_est']:>12}{b['cost_weighted']:>10.0f}"
+            f"{pct(b['vs_terse_pct']):>10}"
+        )
+    print()
+    print("  reason_est = billed completion tokens minus locally counted content")
+    print("  tokens: the thinking budget the model spent. A level that saves")
+    print("  content but bills the savings away in reasoning shows up here.")
+
+    if args.model and any(
+        key in args.model.lower() for key in ("glm", "o1", "o3", "r1", "thinking")
+    ):
+        print()
+        print(
+            f"  NOTE: {args.model} looks like a reasoning model - it bills"
+            " thinking tokens as completion, so the style prompt can make the"
+            " model reason LONGER on some prompts. The billed table above is"
+            " the number to trust; the content-token table overstates savings."
+        )
 
     print()
     print(f"  n = {len(common)} prompts x {args.repeats} repeat(s), tokens summed per repeat")

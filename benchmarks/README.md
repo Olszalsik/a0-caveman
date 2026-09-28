@@ -12,6 +12,7 @@ python benchmarks/run.py --validate
 python benchmarks/run.py --list
 python benchmarks/run.py --model gpt-4o-mini --output results.json
 python benchmarks/run.py --model gpt-4o-mini --levels full,ultra --repeats 3
+python benchmarks/run.py --model gpt-4o-mini --repeats 3 --lean
 ```
 
 There is no `--dry-run` output number. The previous harness had one that fed
@@ -43,6 +44,7 @@ printed 65% forever whether or not a model was ever called.
 | `__baseline__` | none |
 | `__terse__` | `Answer concisely.` |
 | `<level>` | the plugin's real fragments for that level |
+| `<level>-lean` *(with `--lean`)* | the compact style variant (`lean_style_prompt: true`) |
 
 The level arms are built by `build_system_prompt()`, which reads the same
 files the `system_prompt` extension injects at runtime. A missing fragment
@@ -69,6 +71,23 @@ must be saved to offset the input the prompt adds. On the current prompt
 fragments that is roughly 750-850 input tokens per turn (measured on the shipped text, 713 for wenyan-ultra through 821 for ultra). On terse Q&A that is a
 real cost, and it is the number that decides whether a level is worth
 enabling for a given workload.
+
+**Billed usage.** The 1:1 content-token tables above treat input and output
+tokens as equally priced. Real pricing weights output at roughly 3-5x input,
+so the harness re-scores the provider's own usage counters at a configurable
+ratio: `--io-price 4.0` (default) means one output token costs four input
+tokens. The billed table reports, per arm, `cost = prompt_tokens +
+completion_tokens * io_price` and the percentage against the terse control,
+from the provider's billed counters rather than local counts. Two things the
+content tables miss:
+
+- **Reasoning tokens.** Reasoning models bill thinking as completion tokens.
+  `reasoning_tokens_est` (billed completion minus locally counted content)
+  makes that budget visible; a style prompt can make a reasoning model think
+  *longer* on some prompts, which the content tables read as a saving.
+- **Reasoning-model caveat.** On a reasoning model, trust the billed table;
+  the content-token table overstates savings. A non-reasoning model with the
+  same prompt set is the cleaner comparison.
 
 ## What a result does and does not establish
 

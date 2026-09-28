@@ -72,10 +72,28 @@ class CavemanStyle(Extension):
         if not resolved["enabled"]:
             return
 
-        block = caveman_prompts.build_system_prompt(
-            resolved["level"],
-            auto_clarity=config_mod.get_bool("auto_clarity", agent=self.agent),
-        )
+        lean = config_mod.get_bool("lean_style_prompt", agent=self.agent)
+        try:
+            block = caveman_prompts.build_system_prompt(
+                resolved["level"],
+                auto_clarity=config_mod.get_bool("auto_clarity", agent=self.agent),
+                lean=lean,
+            )
+        except TypeError as exc:
+            # Extension files are hot-loaded by the extensions watchdog, but
+            # `helpers/prompts.py` is imported once and cached in sys.modules.
+            # After upgrading the plugin without a server restart, the fresh
+            # extension can call a cached prompts module that predates the
+            # `lean` parameter - that TypeError killed the whole agent turn
+            # (production 2026-09-28). Fall back to the plain build; lean is
+            # simply not applied until the server restarts and re-imports the
+            # current module.
+            if "lean" not in str(exc):
+                raise
+            block = caveman_prompts.build_system_prompt(
+                resolved["level"],
+                auto_clarity=config_mod.get_bool("auto_clarity", agent=self.agent),
+            )
         if not block:
             return
 
