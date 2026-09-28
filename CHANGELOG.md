@@ -102,6 +102,17 @@ were supposed to catch it used fakes that matched the wrong contract.
 
 ### Fixed
 
+- **`benchmarks/run.py` crashed with `ZeroDivisionError`** when a control arm
+  returned 0 output tokens (seen with a reasoning model whose no-system-prompt
+  baseline arm burned its entire `--max-tokens` budget on reasoning and
+  emitted nothing). The `terse_total` divisions are now guarded; with an
+  empty control arm the affected metrics report `None`/`0` instead of
+  crashing.
+- **P4.4 closed.** The live smoke test and the provider-backed A/B benchmark
+  both ran against a real turn / real model; results and the two production
+  realities they surfaced (shared CCR/stats DBs, safe-mode savings by content
+  type) are recorded in `REMEDIATION.md`.
+
 - **A partial upgrade could stop the agent outright.** An install whose
   `helpers/plugins_config.py` was older than its extension files raised
   `TypeError: get_config() got an unexpected keyword argument 'agent'` from

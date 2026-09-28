@@ -439,7 +439,7 @@ async def main_async() -> int:
         input_tokens = counter.tokens(arms[lvl] or "")
         saved_mean = statistics.fmean(
             [r["vs_terse"] for r in per_prompt]
-        ) * (terse_total / len(common) if common else 0)
+        ) * (terse_total / len(common) if common and terse_total else 0)
         report["levels"][lvl] = {
             "system_prompt_chars": len(arms[lvl] or ""),
             "input_tokens_per_turn": input_tokens,
@@ -451,7 +451,9 @@ async def main_async() -> int:
                 "output_tokens_saved_per_turn": saved_mean,
                 "net_tokens_per_turn": saved_mean - input_tokens,
                 "break_even_output_tokens_per_turn": (
-                    input_tokens / (terse_total / len(common)) if common else None
+                    input_tokens / (terse_total / len(common))
+                    if common and terse_total
+                    else None
                 ),
             },
             "per_prompt": per_prompt,

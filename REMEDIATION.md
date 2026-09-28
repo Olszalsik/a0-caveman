@@ -93,10 +93,67 @@ stats window semantics, migration exception path, proxy async dispatch.
 
 `tests/test_healthcheck.py`: mutations for the new/changed checks.
 
+## P4.4 closed: live smoke + provider benchmark (2026-09-28)
+
+**Live turn smoke (PASSED, 217 s).** Driver: `tmp/p44_smoke.py` on the host,
+run in the container with the A0 venv from a container-local copy (9p-flap
+safety). It backs up `config.json`, enables both switches (caveman `full` +
+headroom with tool threshold 200), drives one real turn via the
+`initialize_agent` / `AgentContext.communicate` pattern in an isolated
+workdir, restores `config.json` in `finally`, then verifies against the
+plugin's sqlite DBs, attributing rows by timestamp because the CCR/stats DBs
+are shared with concurrently running production chats.
+
+Observed on the turn's own `code_execution_tool` output (~2000 tokens of
+log-shaped text): hook fired live and compressed (verbose line
+`1917 -> 1877 tokens (40 saved, ratio 0.98)`; stats row `1999 -> 1936, 63
+saved`), a CCR entry was written (`tool:code_execution_tool`), a second,
+older tool result was cleared from history with its original stored
+(`clear:code_execution_tool`, `1042 -> 44` stub), and
+`compressor.retrieve_original` returned the full 2224-char original. Config
+backup/restore clean. Two further facts worth knowing:
+
+- The plugin DBs are shared production state. Rows from other chats appear
+  alongside the smoke's rows; the driver attributes by timestamp window, and
+  docs should never quote the shared totals as one chat's numbers.
+- In safe mode the extractive compressor saves little on repetitive prose
+  (a 900-token repeated-sentence output saved 0-1 tokens) and declines
+  JSON-envelope tool results; real savings come from structural/log content
+  (the same window showed 14-15% on production `tool:parallel` outputs, and
+  ~2-3% on synthetic log/code shapes offline). Mode `safe` is conservative
+  by design; measure before enabling broadly.
+
+**Provider A/B benchmark (3 prompts x 1 repeat, honest numbers).**
+`benchmarks/run.py --model openai/glm-5.3-flash --levels full,ultra
+--repeats 1 --max-tokens 4000` via the ollama cloud OpenAI-compatible
+endpoint. n=1 per prompt; directional only.
+
+Output content tokens vs the `Answer concisely.` control: caveman cuts a
+<!-- quotes the benchmark's own measured per-prompt output deltas; claim-guard: allow -->
+lot (ultra 55%/71%/48% shorter, full 55%/38%/-3% on the three prompts). But
+what gets *billed* differs: glm-5.3-flash is a reasoning model and the style
+prompt makes it reason longer. Provider-billed totals (input+completion):
+
+| prompt | terse | full | ultra |
+|---|---|---|---|
+| react-rerender | 1473 | 1511 (+3%) | 1935 (+31%) |
+| postgres-pool | 2563 | 2250 (**-12%**) | 2289 (**-11%**) |
+| auth-middleware-fix | 1640 | 3076 (+88%) | 3859 (+135%) |
+
+Plus ~780-850 extra input tokens/turn for the style prompt (already in the
+totals above). Verdict for this model/workload: 1 of 3 prompts a modest
+billed saving, 2 a net loss; the reasoning-model behaviour (style prompt
+makes the model reason longer) dominates. This matches the README's
+documented net-loss case; no savings claim goes into the repo docs. Raw
+results in `tmp/p44_benchmark_results*.json` (not committed).
+
+Harness bug found and fixed while running this: `benchmarks/run.py`
+raised `ZeroDivisionError` when a control arm returned 0 tokens (the
+no-system-prompt baseline arm burned its whole completion budget on
+reasoning with glm-5.3-flash). Guarded `terse_total` divisions.
+
 ## Deliberately left open
 
-- P4.4 (unchanged from AUDIT.md): live Agent Zero smoke test and the
-  provider-backed A/B benchmark. Neither can be automated offline.
 - `headroom-ai==0.38.0` adapter validation (still not installed here).
 - ApiHandler agent-scoping is a framework limitation: handlers have no agent.
   The WebUI reads global scope; per-project/per-agent configs are honoured on
