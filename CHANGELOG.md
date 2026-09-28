@@ -112,6 +112,11 @@ were supposed to catch it used fakes that matched the wrong contract.
   both ran against a real turn / real model; results and the two production
   realities they surfaced (shared CCR/stats DBs, safe-mode savings by content
   type) are recorded in `REMEDIATION.md`.
+- **Adapter validation closed.** The audit's "headroom-ai is not installed
+  here" was stale - the A0 venv has had `headroom-ai==0.38.0` since
+  2026-09-24. The plugin's `normal`-mode adapter was validated 12/12 against
+  the real package (router imports, content-type routing, decline guards,
+  SmartCrusher, error fallback, CCR round trip). No code change needed.
 
 - **A partial upgrade could stop the agent outright.** An install whose
   `helpers/plugins_config.py` was older than its extension files raised

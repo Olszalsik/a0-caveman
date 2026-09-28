@@ -161,10 +161,10 @@ path. The result always states which case occurred.
 
 ## Still open
 
-- **`headroom-ai` is not installed here (informational).** `normal` mode
-  therefore only ever exercises its safe local fallback in this environment.
-  The fallback is documented and tested; validating the real adapter needs
-  `headroom-ai==0.38.0` installed, and belongs to P4.4.
+None. The audit's original "headroom-ai is not installed here" note was
+stale: the A0 venv has had `headroom-ai==0.38.0` (pip, 2026-09-24) since
+before this audit was written. The real adapter was validated 2026-09-28 -
+see REMEDIATION.md, "Adapter validation closed".
 
 ## Regression coverage added
 

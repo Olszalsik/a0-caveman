@@ -152,9 +152,37 @@ raised `ZeroDivisionError` when a control arm returned 0 tokens (the
 no-system-prompt baseline arm burned its whole completion budget on
 reasoning with glm-5.3-flash). Guarded `terse_total` divisions.
 
+## Adapter validation closed (2026-09-28)
+
+The audit's "headroom-ai is not installed here" was stale: the A0 venv has
+had `headroom-ai==0.38.0` (pip, 2026-09-24) all along. Validation was run
+twice - once against an isolated `pip --target /tmp` copy of the same wheel,
+once against the live venv install - with identical results, 12/12 checks:
+
+- import + `__version__` (the `headroom_setup.py` check) OK; plugin
+  `headroom_status()` reports available/0.38.0 with wired strategies
+  `auto` + `smart_crusher`; both `ContentRouter.route_and_compress` and
+  `SmartCrusher.smart_crush_tool_output` import as the adapter expects.
+- Router content behaviour in this environment (pure-Python detection; the
+  container's onnxruntime 1.19 is older than the ML extras' 1.24+ floor, so
+  the kompress model is unusable and degrades with warnings - structural
+  compression is unaffected): code passes through unchanged, traceback
+  output is declined (protected by design, and the adapter's
+  `len(routed) < len(text)` guard rejects the router's slightly larger
+  rewrite, returning the original honestly), JSON job arrays compressed
+  57.6%, a repetitive heartbeat log 26% via `compress_text` in `normal`
+  mode with a clean CCR round trip. `smart_crusher` and the unsupported-
+  strategy no-op behave as documented, and a router exception falls back to
+  `_safe_transform` without crashing the caller.
+
+No code change was needed - the adapter was written against this API and
+matches it. The live venv install means `normal` mode is real in this
+container (as of the next server restart, since `sys.modules` caches the
+compressor); `safe` remains the default and unchanged.
+
 ## Deliberately left open
 
-- `headroom-ai==0.38.0` adapter validation (still not installed here).
+None.
 - ApiHandler agent-scoping is a framework limitation: handlers have no agent.
   The WebUI reads global scope; per-project/per-agent configs are honoured on
   the model-facing path only. Documented rather than papered over.
